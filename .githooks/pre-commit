@@ -1,0 +1,23 @@
+#!/bin/sh
+# Thin pre-commit dispatcher: fast checks only (formatting and a build). The
+# full test suite runs in CI, so committing never blocks for minutes.
+set -e
+
+# No Python. The language here is Zig -- built, tested, formatted. See CLAUDE.md.
+staged_py=$(git diff --cached --name-only --diff-filter=A | grep '\.py$' || true)
+if [ -n "$staged_py" ]; then
+    echo "pre-commit: refusing to add $staged_py — this repository is Zig, not Python." >&2
+    echo "            Override with --no-verify if you are certain." >&2
+    exit 1
+fi
+
+staged_zig=$(git diff --cached --name-only --diff-filter=ACM | grep '\.zig$' || true)
+[ -z "$staged_zig" ] && exit 0
+
+# Never mutate and re-stage: a commit should be exactly what was staged.
+if ! zig fmt --check $staged_zig; then
+    echo "pre-commit: zig fmt would change the files above — run 'zig fmt .' and re-stage." >&2
+    exit 1
+fi
+
+zig build
