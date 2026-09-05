@@ -11,6 +11,10 @@ pub const plist = @import("plist.zig");
 pub const redist = @import("redist.zig");
 pub const toolchain = @import("toolchain.zig");
 pub const doctor = @import("doctor.zig");
+pub const layout = @import("layout.zig");
+pub const env = @import("env.zig");
+pub const shell = @import("shell.zig");
+pub const status = @import("status.zig");
 
 test {
     _ = semver;
@@ -19,4 +23,8 @@ test {
     _ = redist;
     _ = toolchain;
     _ = doctor;
+    _ = layout;
+    _ = env;
+    _ = shell;
+    _ = status;
 }

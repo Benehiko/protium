@@ -1,9 +1,14 @@
 # Building the Wine half from source
 
-Verified end to end on 2026-09-05: Apple silicon (M4), macOS 26.6.1, Xcode
-26.6 / Apple clang 21. The build completes and produces an x86-64 Wine loader.
-**Nothing is installed on the host** — every build tool and the one runtime
-dependency are fetched into a scratch directory.
+What the recipe needs is an Apple silicon Mac with Xcode's command line tools;
+`protium doctor` checks a host against the list. **Nothing is installed on the
+host** — every build tool and the one runtime dependency are fetched into a
+scratch directory of your choosing, referred to below as `$SCRATCH`.
+
+*Verified end to end once, on 2026-09-05, against an M4 Mac running macOS
+26.6.1 with Xcode 26.6 / Apple clang 21.* That is a record of one run rather
+than a requirement: nothing in the recipe is pinned to those versions, and
+anything below that turns out to be is a bug worth reporting.
 
 ## Where the source comes from
 
@@ -147,11 +152,17 @@ destination.
 ## Installing it somewhere durable
 
 ```sh
-make install prefix="$HOME/.local/share/protium/wine-11.0-cx26.3"
+make install prefix="$HOME/.local/share/protium/runtimes/wine-11.0-cx26.3"
 ```
 
-**The prefix must not contain spaces.** Wine's install rules do not quote paths,
-so `~/Library/Application Support/protium/...` fails part-way through with
+Install it under `runtimes/` in protium's root and protium finds it without
+being told; the last path component is the name it will be known by. The root
+is `$PROTIUM_HOME`, else `$XDG_DATA_HOME/protium`, else the path above — see
+[`prefixes.md`](prefixes.md).
+
+**The destination must not contain spaces.** Wine's install rules do not quote
+paths, so a path under `~/Library/Application Support/` fails part-way through
+with
 
 ```
 error: Support/protium/wine-11.0-cx26.3/lib/wine/i386-windows : No such file or directory
@@ -166,29 +177,39 @@ The installed tree is about 1.1 GB and mirrors CrossOver's layout exactly:
 Two things must then be added to it:
 
 * **FreeType.** Wine recorded the bare soname `libfreetype.6.dylib`, so copy the
-  dylib into `<install>/lib/` and launch with
-  `DYLD_FALLBACK_LIBRARY_PATH=<install>/lib`. Without this every launch fails
-  to find a font rasteriser.
+  dylib into `<install>/lib/`. protium puts that directory on
+  `DYLD_FALLBACK_LIBRARY_PATH` for every launch, which is what makes the
+  soname resolve; without the dylib being there, every launch comes up with no
+  font rasteriser. See [`prefixes.md`](prefixes.md).
 * **D3DMetal**, merged in — see [`d3dmetal.md`](d3dmetal.md) for why merged and
-  not moved aside.
+  not moved aside. `protium redist <apple-redist-lib> --into <install>/lib`
+  prints the right procedure for that destination.
 
 ## Creating a prefix
 
 ```sh
-export WINEPREFIX="$HOME/.local/share/protium/prefixes/<name>"
+protium prefix new default
+```
+
+This sets `WINEPREFIX` and the rest for you and runs `wineboot -u`. Expect
+several minutes: it runs `wine.inf` through `setupapi`, and every bit of it is
+x86-64 under Rosetta. protium waits for `wineboot`, then ends the session with
+`wineserver -k` — `wineboot` returning is not the signal on its own, because
+`wineserver` inherits stdout and lingers after it. The prefix is finished when
+`system.reg` is written, roughly 1.7 MB, which is what protium checks for
+before reporting success.
+
+By hand, the same thing is:
+
+```sh
+export WINEPREFIX="<root>/prefixes/default"
 export DYLD_FALLBACK_LIBRARY_PATH="<install>/lib"
 "<install>/bin/wine" wineboot -u
 ```
 
-Expect this to take several minutes: it runs `wine.inf` through `setupapi`, and
-every bit of it is x86-64 under Rosetta. It is finished when `system.reg` is
-written — roughly 1.7 MB — not when the shell returns, because `wineserver`
-inherits stdout and lingers after `wineboot` itself has exited. `wineserver -k`
-ends the session.
-
 Smoke test:
 
 ```
-$ wine cmd /c ver
+$ protium run cmd /c ver
 Microsoft Windows 10.0.19045
 ```
