@@ -103,3 +103,50 @@ as a Steam library folder rather than re-downloaded.
 3. `lsteamclient` for macOS — the real work, and a permanent maintenance
    surface as Steamworks interface versions change. Do not start it before
    step 1 has an answer.
+
+## Probe result, 2026-09-05: inconclusive, leaning negative
+
+The probe above was run. A tool was registered at
+`~/Library/Application Support/Steam/compatibilitytools.d/protium-probe/` with a
+`compatibilitytool.vdf` (`from_oslist windows`, `to_oslist macos`), a
+`toolmanifest.vdf` naming a script, and a script that logs its argv. Steam was
+then started fresh.
+
+Four signals, all pointing the same way, none decisive:
+
+* Steam had **never created `compatibilitytools.d`** itself. On Linux it does,
+  at startup.
+* **No `compat_log.txt`** appeared in `logs/`. On Linux, Steam writes one
+  recording which tools it discovered.
+* After a full startup, **nothing in `logs/` or `config/` mentions the tool**,
+  and `config.vdf` gained no `CompatToolMapping` section.
+* **`steamui.dylib` carries no user-facing Steam Play strings** — no "force the
+  use of a specific compatibility tool", no "compatibility tool". The internal
+  identifiers (`Apps.ClearProton`, `proton_launch_params`) are there, but those
+  are the compiled-in shared-source symbols already noted above, not UI.
+
+The script was never invoked, but that proves nothing on its own: nothing was
+launched through the tool.
+
+### A method that does not work here, recorded so it is not tried again
+
+Checking whether Steam *read* the `.vdf` files by comparing their access times
+before and after startup looks conclusive and is worthless: a control — reading
+a file and re-checking — showed the access time does not move on this volume.
+macOS does not maintain atime here. Any conclusion drawn from those timestamps
+is an artefact.
+
+### What would actually settle it
+
+* **The UI.** Open a Windows-only title's Properties. If there is no
+  Compatibility tab, and Settings has no Steam Play section, the mechanism is
+  not exposed and the question is closed.
+* **A syscall trace.** `sudo fs_usage -w -f filesys` filtered to the Steam
+  process while it starts, looking for any open of `compatibilitytools.d`. This
+  is the decisive one; it needs root.
+
+### It would not change the plan either way
+
+Even a Steam that happily invoked our tool would only decide *who spawns the
+process*. The game would still call `SteamAPI_Init()` and still find no client
+inside the prefix. The bridge is the work; the registration is not.
