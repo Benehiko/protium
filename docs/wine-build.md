@@ -213,3 +213,62 @@ Smoke test:
 $ protium run cmd /c ver
 Microsoft Windows 10.0.19045
 ```
+
+## WINEMSYNC=1 is not optional
+
+A Wine built from these sources runs Steam, shows its UI, and then fails every
+webhelper connection:
+
+```
+WebUITransport: Websocket connection from: https://steamloopback.host
+WebUITransport: TCP connection request
+WebUITransport: Connection rejected
+```
+
+about ten times a minute, ending in Steam's *Unexpected Transport Error*
+(0x3999, 0x3008 — the code varies). Steam reaches the internet and can render
+its login window; it simply cannot talk to its own UI process.
+
+The cause is `msync`, CodeWeavers' macOS synchronisation backend (mach ports,
+their analogue of esync/fsync). `dlls/ntdll/unix/msync.c` is in the tree and
+compiled in, but it is inert unless switched on at runtime:
+
+```c
+do_msync_cached = getenv("WINEMSYNC") && atoi(getenv("WINEMSYNC"));
+```
+
+There is no `--enable-msync` configure option and nothing in `config.h`, so a
+straightforward build gives no hint it exists. CrossOver's own launcher sets
+the variable, which is why the identical Steam works there.
+
+**Set `WINEMSYNC=1` for every process touching a prefix**, `wineserver`
+included — msync refuses to mix, and says so:
+
+```
+Server is running with WINEMSYNC but this process is not, please enable
+WINEMSYNC or restart wineserver.
+```
+
+### How this was found
+
+Everything else was eliminated first, and each elimination cost time:
+
+* Not the CEF GPU process. It does crash — no Vulkan — but CEF disables GPU
+  acceleration itself and continues. `-cef-disable-gpu` skips the churn.
+* Not stale caches. Deleting `htmlcache` and `package/` changed nothing.
+* Not a half-applied update, despite `steam.exe` being dated two days before
+  the `steamui/` package. Those timestamps come from the package contents and
+  a clean reinstall reproduces them exactly.
+* Not a version mismatch. Stripping the install to `steam.exe`, `config/`,
+  `userdata/` and re-bootstrapping a fresh 1 GB client changed nothing.
+* Not TLS, though TLS was genuinely broken too and had to be fixed first.
+
+The decisive step was a control: run **the same prefix and the same Steam under
+CrossOver's wine**. It worked immediately, and its first log lines were
+`msync: bootstrapped mach port` / `msync: up and running` — a subsystem our
+build had never mentioned. Comparing runtime logs across the two Wines found in
+one step what four rounds of guessing had not.
+
+Note that CrossOver's `bin/wine` refuses a prefix that is not one of its
+bottles (`'cxbottle.conf' is not readable`); copying `cxbottle.conf` from an
+existing bottle is enough to let the control run.
