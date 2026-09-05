@@ -87,7 +87,16 @@ the same pattern found no other unguarded soname reference.
 
 D3DMetal never touches Vulkan, and Wine `dlopen`s the library at runtime and
 degrades gracefully when it is absent, so defining the soname is sufficient and
-safe. Add to the generated `include/config.h`, **inside** the include guard:
+safe. The resulting Wine really does have no Vulkan — Elden Ring
+reaches its title screen anyway, with `err:vulkan:vulkan_init_once Failed to
+load libvulkan.1.dylib` in the log throughout.
+
+The `CX_LIBVULKAN` variable that patch reads is **not** a way to add one back.
+The string survives into `win32u.so`, but setting it to an x86-64
+`libMoltenVK.dylib` changes nothing: the loader still tries the bare
+`libvulkan.1.dylib` soname and fails. Anything that genuinely needs Vulkan
+needs a rebuild with `SONAME_LIBVULKAN` pointed at a real x86-64 library —
+note that Homebrew's MoltenVK is arm64 and cannot be loaded into this Wine. Add to the generated `include/config.h`, **inside** the include guard:
 
 ```c
 #define SONAME_LIBVULKAN "libvulkan.1.dylib"

@@ -180,3 +180,23 @@ $ protium run --prefix skyrim winecfg
 It reports the program's own exit status as its own, so it can be used inside
 a script. This is also the way to run something in a prefix that is not the
 default without disturbing the shell you are in.
+
+## Do not point two different Wines at one prefix
+
+Wine decides whether a prefix needs updating by comparing
+`$WINEPREFIX/.update-timestamp` against the `wine.inf` of the Wine that is
+starting. Two builds ship different `wine.inf` files, so pointing a protium
+Wine and, say, CrossOver's at the same prefix makes *each* launch run a full
+`wineboot --init` on the way in. That is slow, it rewrites the registry
+underneath whatever state you were studying, and it is not always survivable:
+`rundll32.exe setupapi,InstallHinfSection DefaultInstall` has been seen wedged
+in a Cocoa run loop at 0% CPU for six minutes, after erroring out on
+`wineusb.inf`.
+
+Give each Wine its own prefix. Where a shared one is genuinely required — a
+control comparison against another Wine on identical files is the honest case —
+write the word `disable` into `.update-timestamp` to stop the churn, and
+remember to undo it when the Wine is rebuilt, because the prefix will no longer
+pick up changes on its own.
+
+[`steam-login.md`](steam-login.md) is the comparison this came out of.
