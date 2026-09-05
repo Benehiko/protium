@@ -190,20 +190,38 @@ fn runRedist(gpa: std.mem.Allocator, io: Io, path: []const u8, into: ?[]const u8
         };
     }
 
-    if (into) |dest| {
-        try w.print(
+    if (into) |dest| switch (redist.installStyle(hasWineModules(io, dest))) {
+        .merge => try w.print(
             \\
-            \\To install into {s}, preserving the layout the relative symlinks need:
+            \\{s} holds Wine's own modules, so the tree merges into it:
+            \\
+            \\  ditto "{s}/" "{s}/"
+            \\
+            \\Apple's Read Me prefixes that with `mv external external.old; mv wine
+            \\wine.old`. Do not do that here. Apple means it for a directory holding
+            \\nothing but the payload — CrossOver's lib64/apple_gptk — and against a
+            \\Wine module tree it moves ntdll.dll and every other module aside,
+            \\leaving six shims where the Win32 implementation used to be.
+            \\
+            \\Wine's own d3d11, d3d12 and dxgi are overwritten, which is the point of
+            \\installing D3DMetal. Copy them somewhere first if you want to A/B
+            \\against WineD3D later.
+            \\
+        , .{ dest, path, dest }),
+        .replace => try w.print(
+            \\
+            \\{s} holds no Wine modules, so it is a payload directory and Apple's own
+            \\procedure applies — the .old copies make it a one-command revert:
             \\
             \\  cd {s}
             \\  mv external external.old; mv wine wine.old
             \\  ditto "{s}/" .
             \\
-            \\`ditto` rather than `cp` because it preserves symlinks and framework
-            \\structure; keeping the .old copies makes it a one-command revert.
+            \\`ditto` rather than `cp`, because it preserves the relative symlinks and
+            \\the framework structure that the shims resolve through.
             \\
-        , .{ dest, dest, path });
-    }
+        , .{ dest, dest, path }),
+    };
 
     return ok;
 }
@@ -237,4 +255,13 @@ fn searchPath(io: Io, path_var: []const u8, program: []const u8, buf: []u8) ?[]c
         return full;
     }
     return null;
+}
+
+/// Does `dest` hold Wine's own modules? This decides how the redistributable
+/// must be installed into it, and getting it wrong destroys the Wine.
+fn hasWineModules(io: Io, dest: []const u8) bool {
+    var d = Io.Dir.cwd().openDir(io, dest, .{}) catch return false;
+    defer d.close(io);
+    d.access(io, redist.wine_module_marker, .{}) catch return false;
+    return true;
 }

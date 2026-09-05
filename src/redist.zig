@@ -28,6 +28,11 @@ pub const framework_plist = "external/D3DMetal.framework/Resources/Info.plist";
 pub const windows_dir = "wine/x86_64-windows";
 pub const unix_dir = "wine/x86_64-unix";
 
+/// A file only a real Wine module tree has. Its presence is what separates a
+/// Wine `lib` from a directory holding only Apple's payload, and therefore
+/// which of the two install procedures is correct.
+pub const wine_module_marker = "wine/x86_64-windows/ntdll.dll";
+
 /// What every unix-side shim must point at, relative to `unix_dir`.
 pub const symlink_target = "../../external/libd3dshared.dylib";
 
@@ -85,6 +90,30 @@ fn contains(haystack: []const []const u8, needle: []const u8) bool {
     return false;
 }
 
+pub const InstallStyle = enum {
+    /// Copy the tree in on top of what is there, overwriting same-named files.
+    /// Wine ships its own `d3d11.dll`, `d3d12.dll` and `dxgi.dll` — its
+    /// WineD3D and vkd3d implementations — and the point of installing
+    /// D3DMetal is to take their place.
+    merge,
+    /// Move the old payload aside and copy the new one in whole.
+    replace,
+};
+
+/// How to install into a destination, decided by whether that destination is a
+/// real Wine module tree or a directory holding only a D3DMetal payload.
+///
+/// Apple's Read Me gives the `mv external external.old; mv wine wine.old;
+/// ditto` procedure, and it is correct for the case Apple has in mind: a
+/// vendor directory containing nothing but the evaluation environment, such as
+/// CrossOver's `lib64/apple_gptk`. Run against a Wine built from source, where
+/// `lib/wine` holds every module Wine has, that same procedure moves the
+/// entire Win32 implementation out of the way and replaces it with six shims.
+/// The Wine no longer has an `ntdll.dll`.
+pub fn installStyle(dest_has_wine_modules: bool) InstallStyle {
+    return if (dest_has_wine_modules) .merge else .replace;
+}
+
 const testing = std.testing;
 
 test "a PE shim names its unix counterpart" {
@@ -127,4 +156,13 @@ test "more issues than the buffer holds are counted, not dropped silently" {
     const dlls = [_][]const u8{ "a.dll", "b.dll", "c.dll" };
     var one: [1]Issue = undefined;
     try testing.expectEqual(@as(usize, 3), checkPairs(&dlls, &[_][]const u8{}, &one));
+}
+
+test "installing into a Wine module tree merges; into a payload directory replaces" {
+    // CrossOver's lib64/apple_gptk holds only the payload, so Apple's
+    // mv-then-ditto is right there.
+    try testing.expectEqual(InstallStyle.replace, installStyle(false));
+    // A Wine built from source keeps ntdll.dll in the same directory. Moving
+    // that aside would leave a Wine with no Win32 implementation at all.
+    try testing.expectEqual(InstallStyle.merge, installStyle(true));
 }

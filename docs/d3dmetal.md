@@ -64,13 +64,33 @@ Anything that hooks or inspects the D3D12 shim — an overlay, a frame capture,
 a mod runtime — is pinned to a version whether it knows it or not. Record which
 one an observation was made against.
 
-Apple documents an in-place swap, which doubles as a revert:
+Installing it is one of two procedures, and using the wrong one destroys the
+Wine. `protium redist <dir> --into <dest>` picks between them by looking for
+`wine/x86_64-windows/ntdll.dll` in the destination.
+
+**Into a directory holding only the payload** — CrossOver's `lib64/apple_gptk`,
+or the `lib` of Gcenx's app bundle — Apple's own procedure applies, and the
+`.old` copies make it a one-command revert:
 
 ```
-cd <wine>/lib
+cd <payload-dir>
 mv external external.old; mv wine wine.old
 ditto "/Volumes/Evaluation environment for Windows games 4.0 beta 2/redist/lib/" .
 ```
+
+**Into a Wine you built**, whose `lib/wine` holds every module Wine has, the
+tree must be *merged* instead:
+
+```
+ditto "<redist>/lib/" "<wine>/lib/"
+```
+
+Running Apple's version here would move `ntdll.dll` and the rest of the Win32
+implementation aside and leave six shims in their place. The merge overwrites
+Wine's own `d3d10.dll`, `d3d11.dll`, `d3d12.dll` and `dxgi.dll` — its WineD3D
+and vkd3d implementations — which is exactly the point; keep copies elsewhere
+if you want to A/B against them later. `external/` lands at `<wine>/lib/external`,
+which is where the shims' `../../external/libd3dshared.dylib` resolves from.
 
 ## Environment variables
 

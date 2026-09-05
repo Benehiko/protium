@@ -141,4 +141,54 @@ install name, which is tidier for a permanent installation.
 ## Then install D3DMetal
 
 The Wine tree is only half an environment. See [`d3dmetal.md`](d3dmetal.md);
-`protium redist <dir> --into <wine>/lib` plans and performs that step.
+`protium redist <dir> --into <wine>/lib` prints the right procedure for that
+destination.
+
+## Installing it somewhere durable
+
+```sh
+make install prefix="$HOME/.local/share/protium/wine-11.0-cx26.3"
+```
+
+**The prefix must not contain spaces.** Wine's install rules do not quote paths,
+so `~/Library/Application Support/protium/...` fails part-way through with
+
+```
+error: Support/protium/wine-11.0-cx26.3/lib/wine/i386-windows : No such file or directory
+```
+
+after having already copied several hundred files. The macOS-idiomatic location
+is unavailable for this reason; `~/.local/share/protium/` is not.
+
+The installed tree is about 1.1 GB and mirrors CrossOver's layout exactly:
+`lib/wine/{x86_64-unix, x86_64-windows, i386-windows}`.
+
+Two things must then be added to it:
+
+* **FreeType.** Wine recorded the bare soname `libfreetype.6.dylib`, so copy the
+  dylib into `<install>/lib/` and launch with
+  `DYLD_FALLBACK_LIBRARY_PATH=<install>/lib`. Without this every launch fails
+  to find a font rasteriser.
+* **D3DMetal**, merged in — see [`d3dmetal.md`](d3dmetal.md) for why merged and
+  not moved aside.
+
+## Creating a prefix
+
+```sh
+export WINEPREFIX="$HOME/.local/share/protium/prefixes/<name>"
+export DYLD_FALLBACK_LIBRARY_PATH="<install>/lib"
+"<install>/bin/wine" wineboot -u
+```
+
+Expect this to take several minutes: it runs `wine.inf` through `setupapi`, and
+every bit of it is x86-64 under Rosetta. It is finished when `system.reg` is
+written — roughly 1.7 MB — not when the shell returns, because `wineserver`
+inherits stdout and lingers after `wineboot` itself has exited. `wineserver -k`
+ends the session.
+
+Smoke test:
+
+```
+$ wine cmd /c ver
+Microsoft Windows 10.0.19045
+```
