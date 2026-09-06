@@ -23,7 +23,10 @@ client sits logged off forever. The legacy login path has no such
 dependency. See [The flags are necessary, not
 sufficient](#the-flags-are-necessary-not-sufficient--use--noreactlogin).
 
-The online path is still broken, and the fault is one call.
+The online path is still broken, and the fault is one call. Clicking **go
+online** in a client that signed in offline is the same failure — see [What
+`Schedule init returned 22` actually
+is](#what-schedule-init-returned-22-actually-is).
 
 ## The failure, stated precisely
 
@@ -57,6 +60,23 @@ also exposes through a `dump_scheduled_functions` console command.
 
 This is reproducible on demand: the same prefix, the same Steam files, minutes
 apart, CrossOver signing in and the protium build looping.
+
+### Clicking **go online** hits the same call
+
+Once offline sign-in works and the window paints, the client shows a **go
+online** button. It does nothing, and it is this failure — not a separate one.
+Pressing it drives `steam://open/goonline`, which `logs/console_log.txt`
+records three times per press, and `logs/steamui_login.txt` records as
+
+```
+[ Success ] UI Request: go online
+[ Success ] Initiating LogOn
+```
+
+with nothing after it. `connection_log.txt` for the same second shows
+`SetSteamID`, then `Schedule init returned 22`, then the `EConnect` loop again.
+Four presses on 2026-09-06 produced four identical pairs. The button is a
+second route into `LogOn()`, so it lands on exactly the branch described below.
 
 ## It is not the network
 
@@ -279,16 +299,126 @@ Vulkan — but it does mean the variable cannot be used to test a MoltenVK
 against this Wine. Homebrew's MoltenVK is arm64 and cannot be loaded into an
 x86-64 Wine either; the only x86-64 copy on a typical machine is CrossOver's.
 
+## What `Schedule init returned 22` actually is
+
+*Read out of `steamclient64.dll` on 2026-09-06, client 1788652215,
+`caba4826aa3501039d095aee1843a6bfb270fb43a3ab4455b2d6733223579fee`, and
+`tier0_s64.dll`,
+`30f7bb8d9b86006852493c26124ba253bd9e7ffd40a8b3c7254f86a9032c3be3`. All
+addresses below are virtual addresses at the DLL's preferred image base
+`0x138000000`; the file is not relocated on disk, so a file offset converts to
+a VA by adding `0x138001A00` for anything in `.rdata` (`.rdata` RVA `0x116b000`,
+raw pointer `0x1169600`).*
+
+The value is not an `EResult`. That reading was a coincidence — it is the
+return code of the client's own connect-scheduling function, which returns `1`,
+`0x0b`, `0x16` (22) or `0x1d` depending on which branch it takes.
+
+### The call site
+
+The format string sits at file offset 19455104, VA `0x13928f680`, and has
+exactly one cross-reference in `.text`:
+
+```
+1385a55fe: mov  rcx, rbx            ; this = CCMInterface
+1385a5601: call 0x1385a1010         ; <- the value comes from here
+1385a5606: mov  r8d, eax
+1385a5609: lea  rdx, [rip+0xcea070] ; "LogOn() called; not connected yet, ..."
+```
+
+`0x1385a1010` is the connect-scheduling function — `EConnect`, by its own log
+strings. The same call appears at `0x1385a54b1`, feeding the sibling message
+`… scheduling new connection and logon. Schedule init returned %d`.
+
+### What `EConnect` does
+
+```
+EConnect(this):
+  if (this->0x5f4 && already_connected())          -> log "EConnect called while we're already connected"        ; return 0x0b
+  if (FindJob(g_jobmgr+0x250, this->0x158))        -> log "EConnect called but connection job is already running" ; return 0x1d
+  if (this->0x160 == 1)                            -> log "EConnect called but connection retry loop is in progress"; return 0x1d
+  if (!gate(g_jobmgr))                             -> log "EConnect called - scheduling connection for 50ms from now"
+                                                      set_timer(this+0xb38, 50000)
+                                                      return 0x16          ; <- 22
+  ... allocate a 0x208-byte job named "YieldingConnect", start it, return 1
+```
+
+So `22` does not mean an error and does not mean "pending on the network". It
+means *the gate said no*, and the client rescheduled itself for 50 ms later.
+That is the same branch that writes the `EConnect called - scheduling
+connection for 50ms from now` line, which is why those two messages always
+appear together and why the log fills at roughly eighteen lines a second.
+
+### The gate
+
+`0x138977de0`, called with the job manager (`[0x1397eb9b8]`) as `this`:
+
+```
+gate(jobmgr):
+  if (jobmgr->0x1090 == 0) {
+      jobmgr->0x1090 = 10;
+      tier0_s64!CThread::Start(jobmgr+0x1098, 0);
+  }
+  return jobmgr->0x1090 != 10;
+```
+
+`?Start@CThread@@QEAA_N_K@Z` is resolved from the `tier0_s64.dll` import
+descriptor (IAT slot `0x13916c350`, which falls in that DLL's IAT range
+`0x116bf78`–`0x116c4a8`). `10` is a sentinel: the worker started from that
+`CThread` is what publishes a real value into `+0x1090`. The store that does it
+is at `0x138985819`, and it writes `1` or `2` — never `10` — depending on the
+result of the call immediately before it.
+
+Two consequences follow, and together they explain everything observed:
+
+* **The first `EConnect` after a client start always returns 22.** The thread
+  cannot have published yet. That is normal, and under a working Wine the
+  retry 50 ms later finds `+0x1090` set and proceeds to `YieldingConnect`.
+* **If the worker never publishes, the client can never recover.** The
+  initialiser is guarded by `+0x1090 == 0`, and the sentinel `10` is not zero,
+  so `CThread::Start` is called exactly once for the life of the process. Every
+  subsequent `EConnect` re-reads `10`, returns 22 and rearms the 50 ms timer.
+  This is why the loop is permanent, why it survives clicking **go online**
+  repeatedly, and why only restarting the client clears it.
+
+### What `CThread::Start` depends on
+
+`tier0_s64.dll` export ordinal 240, RVA `0x13800` (VA `0x13f013800` at its
+preferred base `0x13f000000`). Imports resolved from its IAT the same way:
+
+```
+if (m_hThread && GetExitCodeThread(m_hThread, &code) && code == STILL_ACTIVE)
+        -> AssertFailed(tier0 line 0xf12); return false
+hEvent = CreateEventA(...)                  ; asserts at line 0x806 on failure
+hThread = CreateThread(...)                 ; asserts at line 0xf2d on failure
+WaitForSingleObject(hEvent, 60000)          ; 60 s handshake
+```
+
+So the whole sign-in path hangs on one `CreateThread` plus a 60-second event
+handshake in `tier0_s64.dll`. The `EConnect` call returns within the same
+logged second, so the 60-second wait is not being hit — the thread is created
+and `Start` returns promptly, and the failure is downstream of that: the
+worker's body never reaches the store at `0x138985819`.
+
+This has not yet been confirmed at runtime. `+0x1090` holding `10` is an
+inference from which branch is taken, not a read of live memory.
+
 ## Where to look next
 
-The remaining question is what `Schedule init` returns `22` from. The value is
-stable per build — three runs each returned `22` here and `1` under CrossOver —
-so it is a real code and not a counter. Steam's `EResult` 22 is
-`k_EResultPending`, and `k_EResultPending` is one of the six `EResult` names
-`steamclient64.dll` carries as strings, which fits a scheduler that is waiting
-on something that never completes.
+Read `jobmgr->0x1090` in the running client and confirm it is `10`. The job
+manager pointer is the global at VA `0x1397eb9b8`; with the module base of
+`steamclient64.dll` from `/proc`-equivalent output or a Wine debugger, that is a
+two-word read.
 
-Finding what it waits on means locating the call site: the format string
-`LogOn() called; not connected yet, scheduling connection. Schedule init
-returned %d` sits at file offset 19455104 in `steamclient64.dll`, and the call
-that produces the value is immediately before the log call.
+`sample(1)` is not the tool for this. The client's threads are named and the
+names are useful — `CJobMgr::m_WorkThreadPool:0`, `IPC:CSteamEngine`,
+`SteamEngineWatchdogThread` and about forty others show up — but every stack
+unwinds to nothing but repeated `__wine_syscall_dispatcher (in ntdll.so)`,
+because the x86-64 side runs under Rosetta and `sample` cannot walk it. Use
+Wine's own debugger, or `WINEDEBUG=+thread`, and compare the thread the gate
+starts against the CrossOver control.
+
+The other open question is whether this is the same underlying Wine fault as
+the CEF one in [`steam-rendering.md`](steam-rendering.md). Both are "a thread
+or process starts, and the thing it is supposed to hand back never arrives",
+and neither has been traced to a call yet. They may be one bug.
