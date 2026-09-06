@@ -73,23 +73,43 @@ by command, including the three mistakes that each cost an hour to find.
 
 ### Install Steam
 
-> [!WARNING]
-> Set `WINEMSYNC=1` in the prefix's `protium.conf` **before** installing.
-> Steam's UI fails silently without it, in a way that looks like a network
-> fault ([why](docs/wine-build.md#winemsync1-is-not-optional)).
-
 ```sh
-curl -Lo /tmp/SteamSetup.exe https://cdn.akamai.steamstatic.com/client/installer/SteamSetup.exe
-protium run /tmp/SteamSetup.exe
+protium install steam
 ```
+
+This fetches Valve's own installer, prints its size and SHA-256, adds
+`WINEMSYNC=1` to the prefix's `protium.conf` — Steam's UI fails silently
+without it, in a way that looks like a network fault
+([why](docs/wine-build.md#winemsync1-is-not-optional)) — runs the installer
+silently, and prints how to launch what it installed.
+
+`protium install list` shows everything protium knows how to fetch, with a
+word beside each saying whether anyone has actually run it here.
+**[docs/install.md](docs/install.md)** covers the command in full.
+
+> [!WARNING]
+> **This one currently stops before it installs**, and says so. Valve's
+> `SteamSetup.exe` is a 32-bit program, and a prefix made by `protium prefix
+> new` has an empty `syswow64`, so nothing 32-bit starts in it. The Wine is
+> fine — its 32-bit modules are all there, and Steam installs and runs
+> normally in a prefix whose `syswow64` was filled by something else. The
+> measurements are in
+> [docs/install.md](docs/install.md#a-32-bit-installer-cannot-run-in-a-prefix-protium-made).
 
 > [!NOTE]
 > Sign in **online, once**, so your credentials and game licences cache. Then
 > install your game from Steam's UI as normal.
 
 ```sh
-protium run "C:\Program Files (x86)\Steam\steam.exe"
+protium run "C:\Program Files (x86)\Steam\steam.exe" -noreactlogin -cef-disable-gpu
 ```
+
+> [!WARNING]
+> **Steam's own window paints black here.** It signs in, it launches games,
+> and you cannot read it. `-cef-disable-gpu` removes six GPU-process crashes
+> per start but does not fix the window; eleven other things were tried and
+> did not either. [docs/steam-rendering.md](docs/steam-rendering.md) records
+> all of them. Launch games directly, as below.
 
 ### Every launch after that, offline
 
@@ -140,7 +160,9 @@ SteamAppId=1245620 protium run \
 ## Everyday use
 
 ```sh
-protium run ~/Downloads/Setup.exe      # install something
+protium install list                   # software protium can fetch for you
+protium install steam                  # …and install, into the default prefix
+protium run ~/Downloads/Setup.exe      # install something yourself
 protium run "C:\Program Files\…\Game.exe"
 
 protium prefix list                    # your prefixes; * is the default
@@ -178,6 +200,18 @@ Early, and honest about which is which.
 * **Working with a workaround** — signing the Windows Steam client in. Online
   fails inside `CCMInterface::LogOn()`; offline mode plus `-noreactlogin`
   works. Both in [docs/steam-login.md](docs/steam-login.md).
+* **Working, partly** — `protium install`. It fetches, verifies, configures the
+  prefix and runs an installer, and it refuses when it can see the installer
+  cannot run. Its one `verified`-worthy entry is held back by the 32-bit
+  problem below. [docs/install.md](docs/install.md).
+* **Broken, and diagnosed** — 32-bit programs in a prefix `protium prefix new`
+  made. `wineboot` leaves `syswow64` empty, so nothing 32-bit starts, and
+  that is what stops `protium install steam`. The Wine's own 32-bit modules
+  are complete and work once the directory is filled
+  ([docs/install.md](docs/install.md#a-32-bit-installer-cannot-run-in-a-prefix-protium-made)).
+* **Broken, and narrowed** — the Steam client's window paints black. Games run
+  anyway. Eleven fixes tried and written down, none of them it
+  ([docs/steam-rendering.md](docs/steam-rendering.md)).
 * **Designed, not built** — talking to the *native* macOS Steam client the way
   Proton's `lsteamclient` does on Linux. The evidence, and the experiment that
   would settle it, are in [docs/steam-bridge.md](docs/steam-bridge.md).

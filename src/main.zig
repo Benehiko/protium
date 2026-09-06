@@ -21,6 +21,9 @@ const env = @import("env.zig");
 const shell = @import("shell.zig");
 const status = @import("status.zig");
 const session = @import("session.zig");
+const catalog = @import("catalog.zig");
+const fetch = @import("fetch.zig");
+const pe = @import("pe.zig");
 
 const protium_version = "0.1.0";
 
@@ -36,6 +39,8 @@ const usage =
     \\  protium shell-init          Print the line that makes prefixes automatic.
     \\
     \\Every day:
+    \\  protium install <name>            Fetch and install known software.
+    \\  protium install list              Show what protium knows how to install.
     \\  protium run <program> [args...]   Launch something in the default prefix.
     \\  protium prefix list               Show the prefixes and which is default.
     \\  protium prefix new <name>         Create a prefix and boot it.
@@ -55,6 +60,8 @@ const usage =
     \\  --prefix <name>   Use this prefix instead of the default.
     \\  --runtime <name>  Use this Wine instead of the default.
     \\  --shell <name>    fish, zsh, bash or posix. Defaults to $SHELL.
+    \\  --force           install: run the installer even if it is already there.
+    \\  --refresh         install: download again rather than reusing the copy.
     \\
     \\Neither half of the environment is shipped here: the Wine is built from
     \\CodeWeavers' published sources (docs/wine-build.md) and D3DMetal comes
@@ -99,6 +106,7 @@ fn dispatch(
     if (std.mem.eql(u8, cmd, "use")) return runUse(arena, io, vars, rest, w);
     if (std.mem.eql(u8, cmd, "prefix")) return runPrefix(arena, io, vars, rest, w);
     if (std.mem.eql(u8, cmd, "run")) return runLaunch(arena, io, vars, rest, w);
+    if (std.mem.eql(u8, cmd, "install")) return runInstall(arena, io, vars, rest, w);
     if (std.mem.eql(u8, cmd, "shell-init")) return runShellInit(vars, rest, w);
     if (std.mem.eql(u8, cmd, "version")) {
         try w.print("protium {s}\n", .{protium_version});
@@ -123,6 +131,10 @@ const Options = struct {
     shell: ?[]const u8 = null,
     prefix: ?[]const u8 = null,
     runtime: ?[]const u8 = null,
+    /// `install`: run the installer even when the program is already there.
+    force: bool = false,
+    /// `install`: fetch the installer again rather than reusing the download.
+    refresh: bool = false,
     /// Everything that was not a recognised option.
     positional: []const []const u8 = &.{},
     /// An option that was given without its value, or one this command does
@@ -146,6 +158,16 @@ fn parseOptions(
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
+        // Flags without a value, handled before the ones that take one so
+        // that `--force` is not read as `--force <next argument>`.
+        if (std.mem.eql(u8, arg, "--force")) {
+            opts.force = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--refresh")) {
+            opts.refresh = true;
+            continue;
+        }
         const target: *?[]const u8 = if (std.mem.eql(u8, arg, "--shell"))
             &opts.shell
         else if (std.mem.eql(u8, arg, "--prefix"))
@@ -725,6 +747,401 @@ fn spawnWait(io: Io, vars: *std.process.Environ.Map, argv: []const []const u8) !
         .signal => |s| 128 +| @as(u8, @truncate(@intFromEnum(s))),
         .stopped, .unknown => 1,
     };
+}
+
+// ---------------------------------------------------------------------------
+// install
+
+fn runInstall(
+    arena: std.mem.Allocator,
+    io: Io,
+    vars: *std.process.Environ.Map,
+    args: []const []const u8,
+    w: *Io.Writer,
+) !u8 {
+    const opts = try parseOptions(arena, args, false);
+    if (opts.bad) |b| return reportBadOption(w, "install", b);
+    if (opts.positional.len == 0) {
+        try w.writeAll("protium install: name something — `protium install steam`\n");
+        try w.writeAll("`protium install list` shows everything protium knows about.\n");
+        return 2;
+    }
+
+    const name = opts.positional[0];
+    if (std.mem.eql(u8, name, "list")) {
+        try installList(w);
+        return 0;
+    }
+
+    const app = catalog.find(name) orelse {
+        try w.print("protium install: nothing named `{s}` in the catalogue.\n\n", .{name});
+        try installList(w);
+        return 2;
+    };
+
+    // The catalogue is data, and data can be edited without running the
+    // tests. Nothing is fetched over anything but TLS, checked here as well
+    // as there.
+    if (!catalog.isSafeUrl(app.url)) {
+        try w.print("protium install: {s} is not an https:// URL, so it will not be fetched.\n", .{app.url});
+        return 1;
+    }
+
+    const res = try resolve(arena, io, vars, opts, w) orelse return 1;
+    const loader = try res.sess.join(&.{ res.runtime.dir, layout.wine_loader });
+    if (!res.sess.exists(loader)) {
+        try w.print("protium install: {s} does not exist, so there is no Wine to install into.\n", .{loader});
+        try w.writeAll("Run `protium status` for the next step.\n");
+        return 1;
+    }
+    if (!res.sess.exists(try res.sess.join(&.{ res.prefix.dir, layout.boot_marker }))) {
+        try w.print("protium install: the prefix {s} was never finished.\n", .{res.prefix.name});
+        try w.print("Finish it with: protium prefix new {s}\n", .{res.prefix.name});
+        return 1;
+    }
+
+    // Where the program will end up, so that "already there" is answered by
+    // looking rather than by a marker file protium wrote itself.
+    const target = catalog.hostPath(arena, res.prefix.dir, app.installed) catch {
+        try w.print("protium install: {s} names {s}, which is not on C:\n", .{ app.name, app.installed });
+        return 1;
+    };
+    const already = res.sess.exists(target);
+
+    try w.print("protium install {s} — {s}\n", .{ app.name, app.summary });
+    try w.print("  prefix    {s}\n", .{res.prefix.name});
+    try w.print("  runtime   {s}\n", .{res.runtime.name});
+    try w.print("  evidence  {s}\n", .{app.confidence.label()});
+    try w.writeAll("\n");
+    try printIndented(w, "  ", app.evidence);
+    try w.writeAll("\n");
+
+    if (already and !opts.force) {
+        try w.print("Already installed: {s}\n", .{app.installed});
+        try w.writeAll("Run it again with --force to reinstall over it.\n\n");
+        try printLaunch(w, app, res.prefix.name);
+        return 0;
+    }
+
+    if (try applyNeeds(arena, w, res, app) != 0) return 1;
+
+    // The download, kept beside the prefixes: the same installer serves every
+    // prefix, and the directory holds nothing that cannot be fetched again.
+    const dir = try res.sess.join(&.{ res.sess.root, layout.downloads });
+    try Io.Dir.cwd().createDirPath(io, dir);
+    const dest = try res.sess.join(&.{ dir, app.file });
+
+    try w.print("Fetching {s}\n", .{app.url});
+    try w.flush();
+
+    const report = fetch.download(arena, io, app.url, dest, opts.refresh) catch |err| {
+        try w.print("\nprotium install: the download failed — {s}\n", .{@errorName(err)});
+        try w.print("Nothing was installed. The URL is {s}\n", .{app.url});
+        return 1;
+    };
+
+    var size_buf: [64]u8 = undefined;
+    var hex_buf: [64]u8 = undefined;
+    try w.print("  {s}{s}\n", .{ dest, if (report.reused) "  (already downloaded)" else "" });
+    try w.print("  {s}\n", .{fetch.size(&size_buf, report.bytes)});
+    try w.print("  sha256 {s}\n", .{report.hex(&hex_buf)});
+    if (report.reused) {
+        try w.writeAll("  Pass --refresh to fetch the vendor's current file instead.\n");
+    }
+    try w.writeAll("\n");
+
+    // Two bytes read before anything is spawned. A 32-bit installer in a
+    // prefix with an empty syswow64 fails inside Wine's loader with an exit
+    // status and one line about kernel32, which is not something anyone can
+    // act on; this is.
+    if (try checkArch(io, res, dest, w) != 0) return 1;
+
+    // Copied inside the prefix before it is run. An installer given a host
+    // path works for a plain `.exe` and does not for an `.msi`, because
+    // msiexec is handed the string rather than the loader; one route that
+    // works for both is worth more than two that each work sometimes.
+    const temp_rel = "drive_c/windows/temp";
+    const temp_dir = try res.sess.join(&.{ res.prefix.dir, temp_rel });
+    try Io.Dir.cwd().createDirPath(io, temp_dir);
+    const staged = try res.sess.join(&.{ temp_dir, app.file });
+    try copyFile(io, dest, staged);
+    defer Io.Dir.cwd().deleteFile(io, staged) catch {};
+    const windows_path = try std.fmt.allocPrint(arena, "C:\\windows\\temp\\{s}", .{app.file});
+
+    const settings = try res.sess.prefixSettings(res.prefix, null);
+    const computed = try env.compute(arena, res.site, res.sess.inherited(), settings);
+    for (computed) |v| try vars.put(v.name, v.value);
+
+    var argv: std.ArrayList([]const u8) = .empty;
+    try argv.append(arena, loader);
+    if (catalog.isMsi(app.file)) {
+        try argv.append(arena, "msiexec");
+        try argv.append(arena, "/i");
+    }
+    try argv.append(arena, windows_path);
+    for (app.installer_args) |a| try argv.append(arena, a);
+
+    try w.writeAll("Running the installer. It is the vendor's own, and it runs as itself:\n\n  ");
+    for (argv.items[1..], 0..) |a, n| {
+        if (n != 0) try w.writeAll(" ");
+        try w.writeAll(a);
+    }
+    try w.writeAll("\n\n");
+    try w.flush();
+
+    const code = try spawnWait(io, vars, argv.items);
+    if (code != 0) {
+        try w.print("\nThe installer exited with {d}.\n", .{code});
+        try w.print("The download is kept at {s}, so a retry does not fetch it again.\n", .{dest});
+        return 1;
+    }
+
+    // wineserver keeps the session — and this terminal's stdout — open after
+    // an installer that started a service or a helper.
+    const server = try res.sess.join(&.{ res.runtime.dir, layout.wineserver });
+    if (res.sess.exists(server)) _ = try spawnWait(io, vars, &.{ server, "-w" });
+
+    try w.writeAll("\n");
+    if (res.sess.exists(target)) {
+        try w.print("Installed: {s}\n", .{app.installed});
+    } else {
+        // Said rather than assumed: an installer can exit 0 having done
+        // nothing, and a silent switch it did not understand does exactly that.
+        try w.print("The installer finished, but {s} is not there.\n", .{app.installed});
+        try w.writeAll("Either it installs somewhere else than the catalogue records, or it did nothing.\n");
+        return 1;
+    }
+    if (app.notes.len != 0) {
+        try w.writeAll("\n");
+        try printIndented(w, "", app.notes);
+    }
+    try w.writeAll("\n");
+    try printLaunch(w, app, res.prefix.name);
+    return 0;
+}
+
+/// The catalogue, as a table. `confidence` is printed beside every row rather
+/// than in a footnote: the difference between "this was run here" and "this
+/// URL resolves" is the only thing on the line worth reading twice.
+fn installList(w: *Io.Writer) !void {
+    try w.writeAll("protium install\n\n");
+    for (&catalog.apps) |*a| {
+        try w.print("  {s: <14} {s: <10} {s}\n", .{ a.name, a.confidence.label(), a.summary });
+    }
+    try w.writeAll(
+        \\
+        \\  verified   fetched, installed and started under a Wine built from
+        \\             these instructions, on a date the entry records
+        \\  untested   the download is the publisher's own and resolves, and
+        \\             nothing more than that
+        \\  blocked    someone tried it and something specific stops it
+        \\
+        \\`protium install <name>` prints the evidence behind that word before it
+        \\fetches anything. Nothing here is redistributed: each one is downloaded
+        \\from its publisher at the moment you ask for it.
+        \\
+    );
+}
+
+/// How to start what was just installed, with the reason for every argument
+/// that is not the program's own idea.
+fn printLaunch(w: *Io.Writer, app: *const catalog.App, prefix_name: []const u8) !void {
+    try w.writeAll("Launch it with:\n\n  protium run");
+    if (!std.mem.eql(u8, prefix_name, "default")) {
+        try w.print(" --prefix {s}", .{prefix_name});
+    }
+    try w.print(" \"{s}\"", .{app.installed});
+    for (app.launch_args) |a| try w.print(" {s}", .{a.flag});
+    try w.writeAll("\n");
+    if (app.launch_args.len != 0) {
+        try w.writeAll("\nand those arguments are there because:\n");
+        for (app.launch_args) |a| {
+            try w.print("\n  {s}\n", .{a.flag});
+            try printWrapped(w, "      ", a.why);
+        }
+    }
+}
+
+/// Add the settings the program needs to the prefix's own `protium.conf`,
+/// reporting every change. A setting already present with a different value is
+/// left alone and reported: the file is the person's, and a prefix that has
+/// been deliberately configured is not protium's to correct.
+fn applyNeeds(
+    arena: std.mem.Allocator,
+    w: *Io.Writer,
+    res: Resolution,
+    app: *const catalog.App,
+) !u8 {
+    if (app.needs.len == 0) return 0;
+
+    const present = try res.sess.prefixSettings(res.prefix, null);
+    const clashes = try catalog.conflictingNeeds(arena, app, present);
+    for (clashes) |c| {
+        try w.print("protium install: this prefix sets {s}={s}, and {s} needs {s}={s}.\n", .{
+            c.need.key, c.found, app.name, c.need.key, c.need.value,
+        });
+        try printWrapped(w, "  ", c.need.why);
+        try w.writeAll("\nNothing has been changed. Edit protium.conf, or install into another prefix.\n");
+    }
+    if (clashes.len != 0) return 1;
+
+    const missing = try catalog.missingNeeds(arena, app, present);
+    if (missing.len == 0) return 0;
+
+    const path = try res.sess.join(&.{ res.prefix.dir, layout.prefix_config });
+    var text: std.ArrayList(u8) = .empty;
+    if (Io.Dir.cwd().readFileAlloc(res.sess.io, path, arena, .limited(1 << 16))) |existing| {
+        try text.appendSlice(arena, existing);
+        if (existing.len != 0 and existing[existing.len - 1] != '\n') try text.append(arena, '\n');
+    } else |_| {}
+
+    var body = std.Io.Writer.Allocating.fromArrayList(arena, &text);
+    const bw = &body.writer;
+    try bw.print("\n# Added by `protium install {s}`.\n", .{app.name});
+    for (missing) |need| {
+        try bw.print("# {s}\n", .{need.why});
+        try bw.print("{s}={s}\n", .{ need.key, need.value });
+    }
+    try Io.Dir.cwd().writeFile(res.sess.io, .{ .sub_path = path, .data = body.written() });
+
+    try w.print("Added to {s}:\n", .{path});
+    for (missing) |need| {
+        try w.print("\n  {s}={s}\n", .{ need.key, need.value });
+        try printWrapped(w, "      ", need.why);
+    }
+    try w.writeAll("\n");
+    return 0;
+}
+
+/// Can this prefix run the thing that was just downloaded?
+///
+/// A prefix has a 32-bit side exactly when its `syswow64` holds modules.
+/// `protium prefix new` produces one that does not — `wineboot` stops before
+/// it fills that directory — so a 32-bit installer in a protium-made prefix
+/// cannot run, and says so in Wine's terms rather than protium's when it
+/// tries. See docs/install.md.
+///
+/// Anything that is not a PE file is passed through rather than refused: an
+/// installer format protium does not recognise is the vendor's business, and
+/// guessing would block a working install.
+fn checkArch(
+    io: Io,
+    res: Resolution,
+    installer: []const u8,
+    w: *Io.Writer,
+) !u8 {
+    var head: [4096]u8 = undefined;
+    const n = readHead(io, installer, &head) catch return 0;
+    const m = pe.machine(head[0..n]) catch return 0;
+    if (m != .i386) return 0;
+
+    const wow = try res.sess.join(&.{ res.prefix.dir, "drive_c", "windows", "syswow64" });
+    if (!isEmptyDir(io, wow)) return 0;
+
+    try w.print("protium install: this installer is {s}, and the prefix {s} has no 32-bit side.\n\n", .{
+        m.text(), res.prefix.name,
+    });
+    try w.print(
+        \\{s}
+        \\is empty. Wine populates it while `wineboot` sets a prefix up, and on this
+        \\build that step does not finish, so nothing 32-bit can start — the loader
+        \\reports `could not load kernel32.dll` and the installer exits.
+        \\
+        \\The Wine itself is not the problem: its lib/wine/i386-windows tree is
+        \\complete, and 32-bit programs do run in a prefix whose syswow64 was filled
+        \\by something else. docs/install.md records what was measured.
+        \\
+        \\Nothing has been installed. The download is kept, so a retry costs nothing.
+        \\
+    , .{wow});
+    return 1;
+}
+
+/// The first `buf.len` bytes of a file, or fewer if it is shorter. Not
+/// `readFileAlloc`: a limit there is a maximum the whole file must fit under,
+/// and every installer is far larger than its headers.
+fn readHead(io: Io, path: []const u8, buf: []u8) !usize {
+    var file = try Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+
+    var filled: usize = 0;
+    while (filled < buf.len) {
+        var vec: [1][]u8 = .{buf[filled..]};
+        const n = file.readStreaming(io, &vec) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => |e| return e,
+        };
+        if (n == 0) break;
+        filled += n;
+    }
+    return filled;
+}
+
+/// True when `path` is a directory holding no entries. A path that is not
+/// there, or cannot be opened, is not reported as empty: this decides whether
+/// to refuse to run something, and refusing on a failed `openDir` would turn
+/// an unrelated permissions problem into a wrong diagnosis.
+fn isEmptyDir(io: Io, path: []const u8) bool {
+    var dir = Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return false;
+    defer dir.close(io);
+    var it = dir.iterate();
+    const first = it.next(io) catch return false;
+    return first == null;
+}
+
+fn copyFile(io: Io, from: []const u8, to: []const u8) !void {
+    var src = try Io.Dir.cwd().openFile(io, from, .{});
+    defer src.close(io);
+    var dst = try Io.Dir.cwd().createFile(io, to, .{});
+    defer dst.close(io);
+
+    var buf: [128 * 1024]u8 = undefined;
+    var vec: [1][]u8 = .{&buf};
+    while (true) {
+        const n = src.readStreaming(io, &vec) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => |e| return e,
+        };
+        if (n == 0) break;
+        try dst.writeStreamingAll(io, buf[0..n]);
+    }
+}
+
+/// Print a block of text with every line indented, so a paragraph written in
+/// the catalogue keeps its shape on a terminal.
+fn printIndented(w: *Io.Writer, indent: []const u8, text: []const u8) !void {
+    var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, text, "\n"), '\n');
+    // A blank line stays blank rather than becoming the indent's worth of
+    // trailing spaces, which is invisible until someone pastes it somewhere.
+    while (lines.next()) |line| {
+        if (line.len == 0) try w.writeAll("\n") else try w.print("{s}{s}\n", .{ indent, line });
+    }
+}
+
+/// Print one long sentence as indented lines that fit a terminal. The reasons
+/// in the catalogue are written as sentences rather than as pre-wrapped text,
+/// because they also appear in `docs/`, where the wrapping would be wrong.
+fn printWrapped(w: *Io.Writer, indent: []const u8, text: []const u8) !void {
+    const width = 76;
+    var col: usize = indent.len;
+    var first = true;
+    var words = std.mem.tokenizeAny(u8, text, " \n");
+    try w.writeAll(indent);
+    while (words.next()) |word| {
+        if (!first and col + 1 + word.len > width) {
+            try w.print("\n{s}", .{indent});
+            col = indent.len;
+            first = true;
+        }
+        if (!first) {
+            try w.writeAll(" ");
+            col += 1;
+        }
+        try w.writeAll(word);
+        col += word.len;
+        first = false;
+    }
+    try w.writeAll("\n");
 }
 
 // ---------------------------------------------------------------------------

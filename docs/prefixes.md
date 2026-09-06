@@ -168,6 +168,19 @@ The settings D3DMetal itself reads are listed in
 [`d3dmetal.md`](d3dmetal.md). Because the file lives inside the prefix,
 copying or moving a prefix carries its settings with it.
 
+## A prefix protium made has no 32-bit side
+
+`protium prefix new` runs Wine's own `wineboot`, and on this build that stops
+before it fills `drive_c/windows/syswow64`. The directory is created and left
+empty, so no 32-bit Windows program starts in the prefix — the loader reports
+`could not load kernel32.dll, status c0000135`.
+
+This is not a limitation of the Wine, whose 32-bit module tree is complete: it
+is a step of prefix creation that does not finish. 64-bit programs, which is
+most modern games, are unaffected. The measurements, and the one 32-bit
+installer it currently blocks, are in
+[`install.md`](install.md#a-32-bit-installer-cannot-run-in-a-prefix-protium-made).
+
 ## Launching without the shell hook
 
 `protium run` applies the same environment to one command and nothing else:

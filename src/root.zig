@@ -15,6 +15,9 @@ pub const layout = @import("layout.zig");
 pub const env = @import("env.zig");
 pub const shell = @import("shell.zig");
 pub const status = @import("status.zig");
+pub const catalog = @import("catalog.zig");
+pub const fetch = @import("fetch.zig");
+pub const pe = @import("pe.zig");
 
 test {
     _ = semver;
@@ -27,4 +30,7 @@ test {
     _ = env;
     _ = shell;
     _ = status;
+    _ = catalog;
+    _ = fetch;
+    _ = pe;
 }

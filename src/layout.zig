@@ -21,6 +21,12 @@ const std = @import("std");
 pub const runtimes = "runtimes";
 pub const prefixes = "prefixes";
 
+/// Where `protium install` keeps the installers it fetched. It is beside the
+/// prefixes rather than inside one, because the same `SteamSetup.exe` serves
+/// every prefix, and because deleting the whole directory has to be safe: it
+/// holds nothing that cannot be downloaded again.
+pub const downloads = "downloads";
+
 /// The file recording which runtime and prefix to use, in the same
 /// `KEY=VALUE` form as a prefix's own settings — see `env.parse`.
 pub const defaults_file = "defaults";
