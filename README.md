@@ -81,7 +81,11 @@ This fetches Valve's own installer, prints its size and SHA-256, adds
 `WINEMSYNC=1` to the prefix's `protium.conf` — Steam's UI fails silently
 without it, in a way that looks like a network fault
 ([why](docs/wine-build.md#winemsync1-is-not-optional)) — runs the installer
-silently, and prints how to launch what it installed.
+silently, applies the fix that makes Steam's window paint
+([what and why](docs/steam-rendering.md)), and prints how to launch it.
+
+Run it again on an install you already have: it leaves Steam alone and just
+puts the rendering fix back, which is what a Steam update takes off.
 
 `protium install list` shows everything protium knows how to fetch, with a
 word beside each saying whether anyone has actually run it here.
@@ -101,15 +105,18 @@ word beside each saying whether anyone has actually run it here.
 > install your game from Steam's UI as normal.
 
 ```sh
-protium run "C:\Program Files (x86)\Steam\steam.exe" -noreactlogin -cef-disable-gpu
+protium run "C:\Program Files (x86)\Steam\steam.exe" \
+    -noreactlogin -noverifyfiles -norepairfiles
 ```
 
-> [!WARNING]
-> **Steam's own window paints black here.** It signs in, it launches games,
-> and you cannot read it. `-cef-disable-gpu` removes six GPU-process crashes
-> per start but does not fix the window; eleven other things were tried and
-> did not either. [docs/steam-rendering.md](docs/steam-rendering.md) records
-> all of them. Launch games directly, as below.
+> [!IMPORTANT]
+> Those three arguments are not optional, and `protium install steam` prints
+> them with the reason for each. Steam's window paints black without the fix
+> that command applies, and Steam puts its own file back — undoing the fix —
+> if you launch it without `-noverifyfiles -norepairfiles`. Run `protium
+> install steam` again after a Steam update, or any time the window goes
+> black. [docs/steam-rendering.md](docs/steam-rendering.md) has the whole
+> story.
 
 ### Every launch after that, offline
 
@@ -200,18 +207,21 @@ Early, and honest about which is which.
 * **Working with a workaround** — signing the Windows Steam client in. Online
   fails inside `CCMInterface::LogOn()`; offline mode plus `-noreactlogin`
   works. Both in [docs/steam-login.md](docs/steam-login.md).
-* **Working, partly** — `protium install`. It fetches, verifies, configures the
-  prefix and runs an installer, and it refuses when it can see the installer
-  cannot run. Its one `verified`-worthy entry is held back by the 32-bit
-  problem below. [docs/install.md](docs/install.md).
+* **Working** — `protium install`. It fetches from the publisher, prints the
+  size and SHA-256 of what arrived, configures the prefix, runs the installer,
+  applies the fixes a program needs here, and refuses when it can see the
+  installer cannot run. [docs/install.md](docs/install.md).
+* **Working, with a file replaced** — Steam's window. Chromium's display
+  compositor runs in a separate GPU process, and nothing it composites reaches
+  the window here; protium writes a stand-in `steamwebhelper.exe` that adds
+  `--in-process-gpu`, built from source in this repository. Reversible with
+  `protium install steam --undo`
+  ([docs/steam-rendering.md](docs/steam-rendering.md)).
 * **Broken, and diagnosed** — 32-bit programs in a prefix `protium prefix new`
   made. `wineboot` leaves `syswow64` empty, so nothing 32-bit starts, and
-  that is what stops `protium install steam`. The Wine's own 32-bit modules
-  are complete and work once the directory is filled
+  that is what stops `protium install steam` on a fresh prefix. The Wine's own
+  32-bit modules are complete and work once the directory is filled
   ([docs/install.md](docs/install.md#a-32-bit-installer-cannot-run-in-a-prefix-protium-made)).
-* **Broken, and narrowed** — the Steam client's window paints black. Games run
-  anyway. Eleven fixes tried and written down, none of them it
-  ([docs/steam-rendering.md](docs/steam-rendering.md)).
 * **Designed, not built** — talking to the *native* macOS Steam client the way
   Proton's `lsteamclient` does on Linux. The evidence, and the experiment that
   would settle it, are in [docs/steam-bridge.md](docs/steam-bridge.md).

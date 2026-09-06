@@ -20,6 +20,7 @@
 
 const std = @import("std");
 const env = @import("env.zig");
+pub const webhelper = @import("webhelper.zig");
 
 /// How much is actually known about an entry.
 pub const Confidence = enum {
@@ -60,6 +61,29 @@ pub const Need = struct {
     why: []const u8,
 };
 
+/// A file of the program's that protium replaces so the program works here.
+///
+/// This is the most invasive thing `install` does, so it is described rather
+/// than performed silently: the replacement is printed with its reason before
+/// it happens, the original is moved aside rather than deleted, and `--undo`
+/// puts it back. A program that needs one of these is not `verified` on the
+/// strength of the fix alone — the entry says what was replaced and why.
+pub const Fix = struct {
+    /// One line, printed before the change is made.
+    summary: []const u8,
+    /// The whole reason, in prose. Printed too.
+    why: []const u8,
+    /// The file replaced, as a Windows path inside the prefix.
+    target: []const u8,
+    /// Where the program's own copy is moved to. Beside the original, because
+    /// the replacement finds it by name relative to itself.
+    backup: []const u8,
+    /// Arguments the program must additionally be launched with for the
+    /// replacement to survive — Steam repairs its own files otherwise. Null
+    /// when the fix needs no help staying in place.
+    needs_launch_args: bool = false,
+};
+
 pub const App = struct {
     /// What is typed after `protium install`.
     name: []const u8,
@@ -78,11 +102,32 @@ pub const App = struct {
     launch_args: []const Arg = &.{},
     /// Settings the prefix needs before it will work.
     needs: []const Need = &.{},
+    /// A file protium replaces to make the program work here, or null.
+    fix: ?Fix = null,
     confidence: Confidence,
     /// What was actually observed, and when. Never a promise.
     evidence: []const u8,
     /// Anything else worth reading once, printed after a successful install.
     notes: []const u8 = "",
+};
+
+/// The stand-in `steamwebhelper.exe`, built from `src/webhelper.zig`.
+pub const steam_webhelper_fix: Fix = .{
+    .summary = "replace Steam's steamwebhelper.exe with one that adds --in-process-gpu",
+    .why =
+    \\Steam's interface is Chromium, and Chromium composites in a separate GPU
+    \\process. That process starts here and nothing it composites reaches the
+    \\window, so the client signs in, loads your library, and paints black.
+    \\`--in-process-gpu` moves the compositor into the browser process and the
+    \\window paints. The switch is Chromium's, not Steam's, and steam.exe
+    \\forwards only its own six -cef-* flags, so the only way to pass it is to
+    \\stand in front of the executable. protium builds the stand-in from source
+    \\in this repository; it appends the switch and launches Valve's own binary,
+    \\which is moved aside rather than deleted.
+    ,
+    .target = "C:\\Program Files (x86)\\Steam\\bin\\cef\\cef.win64\\" ++ webhelper.installed_as,
+    .backup = "C:\\Program Files (x86)\\Steam\\bin\\cef\\cef.win64\\" ++ webhelper.real_binary,
+    .needs_launch_args = true,
 };
 
 pub const apps = [_]App{
@@ -103,10 +148,15 @@ pub const apps = [_]App{
                 .why = "offline mode is chosen on the CEF login page, and that page often never renders here; the legacy login path does not depend on it",
             },
             .{
-                .flag = "-cef-disable-gpu",
-                .why = "without it Steam's CEF GPU process dies with an access violation six times per start; this does not fix the black window (docs/steam-rendering.md)",
+                .flag = "-noverifyfiles",
+                .why = "Steam checks bin/cef against its own package on every start and puts Valve's steamwebhelper.exe back, which undoes the fix below before it can run",
+            },
+            .{
+                .flag = "-norepairfiles",
+                .why = "the same check, by its other name; both are Steam's own options and both are needed for the replacement to survive a launch",
             },
         },
+        .fix = steam_webhelper_fix,
         .needs = &.{
             .{
                 .key = "WINEMSYNC",
@@ -114,19 +164,21 @@ pub const apps = [_]App{
                 .why = "msync is compiled in but inert unless this is set, and without it Steam cannot reach its own UI process (docs/wine-build.md)",
             },
         },
-        .confidence = .blocked,
+        .confidence = .verified,
         .evidence =
-        \\`steam.exe` itself is 64-bit and runs: it signs in offline and launches
-        \\games under Wine 11.0 built from crossover-sources-26.3.0 with D3DMetal
-        \\4.0b2, on an M4 Mac running macOS 26.6.1 (2026-09-06). Its own window
-        \\paints black, which docs/steam-rendering.md records.
+        \\Runs and renders. On 2026-09-06, under Wine 11.0 built from
+        \\crossover-sources-26.3.0 with D3DMetal 4.0b2 on an M4 Mac running
+        \\macOS 26.6.1: signs in offline, draws its store, library and account
+        \\menu, and launches games. The window painted black until the fix below;
+        \\with it, Steam's own cef_log.txt has no GPU lines at all, which is what
+        \\the same client wrote under CrossOver when it worked.
         \\
+        \\One thing is still broken, and it is prefix creation rather than Steam:
         \\`SteamSetup.exe` is 32-bit, and a prefix made by `protium prefix new`
-        \\has an empty syswow64, so the installer cannot start there — protium
+        \\has an empty syswow64, so the installer cannot start in it. protium
         \\checks for that and says so rather than running it. Fill that directory
-        \\and the same command installs Steam silently, start to finish. This is
-        \\a fault in prefix creation, not in Steam: docs/install.md has both
-        \\measurements.
+        \\and this command installs Steam silently, start to finish
+        \\(docs/install.md).
         ,
         .notes =
         \\Sign in online once so credentials and licences cache, then switch to
@@ -368,6 +420,51 @@ test "a setting the prefix already disagrees about is reported, not overwritten"
     // Not set at all is `missingNeeds`' business, not this one's.
     const absent = try conflictingNeeds(a, steam, &.{});
     try testing.expectEqual(@as(usize, 0), absent.len);
+}
+
+test "a fix names a file, a place to keep the original, and a reason" {
+    for (&apps) |*a| {
+        const fix = a.fix orelse continue;
+        try testing.expect(fix.summary.len != 0);
+        // The reason is printed before the file is touched, so it has to be
+        // long enough to actually be one.
+        try testing.expect(fix.why.len > 80);
+        try testing.expect(std.mem.startsWith(u8, fix.target, "C:\\"));
+        try testing.expect(std.mem.startsWith(u8, fix.backup, "C:\\"));
+        // Replacing a file with itself would delete it.
+        try testing.expect(!std.mem.eql(u8, fix.target, fix.backup));
+    }
+}
+
+test "the stand-in and the catalogue agree on both file names" {
+    // src/webhelper.zig finds the real binary by taking its own path and
+    // swapping one name for the other. If these drift apart, the stand-in
+    // launches itself for ever and Steam never starts — a failure that would
+    // look nothing like a renamed constant.
+    const fix = find("steam").?.fix.?;
+    try testing.expect(std.mem.endsWith(u8, fix.target, webhelper.installed_as));
+    try testing.expect(std.mem.endsWith(u8, fix.backup, webhelper.real_binary));
+
+    // …and they must live in the same directory, because that swap is the
+    // only thing that relates them.
+    const target_dir = fix.target[0 .. fix.target.len - webhelper.installed_as.len];
+    const backup_dir = fix.backup[0 .. fix.backup.len - webhelper.real_binary.len];
+    try testing.expectEqualStrings(target_dir, backup_dir);
+}
+
+test "a fix that Steam would undo comes with the flags that stop it" {
+    const steam = find("steam").?;
+    try testing.expect(steam.fix.?.needs_launch_args);
+    // Steam puts its own steamwebhelper.exe back on every start unless both
+    // of these are passed, which would silently undo the fix.
+    var has_verify = false;
+    var has_repair = false;
+    for (steam.launch_args) |arg| {
+        if (std.mem.eql(u8, arg.flag, "-noverifyfiles")) has_verify = true;
+        if (std.mem.eql(u8, arg.flag, "-norepairfiles")) has_repair = true;
+    }
+    try testing.expect(has_verify);
+    try testing.expect(has_repair);
 }
 
 test "every confidence a row can carry prints as one word" {

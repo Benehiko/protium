@@ -15,7 +15,7 @@ protium install steam       # fetch Valve's installer and run it
 ```
 $ protium install list
 
-  steam          blocked    Valve's Steam client
+  steam          verified   Valve's Steam client
   epic           untested   Epic Games Launcher
   battlenet      untested   Blizzard Battle.net
 ```
@@ -66,8 +66,44 @@ entry carries evidence.
    is not. An installer can exit 0 having done nothing — a silent switch it
    did not understand does exactly that — so the exit status is not taken as
    proof.
-10. **Prints how to launch it**, including every argument it needs *here* and
+10. **Applies the program's fix**, if it has one — see below.
+11. **Prints how to launch it**, including every argument it needs *here* and
     the reason for each one.
+
+## Fixes: when protium replaces one of a program's files
+
+Some software will not work here without a file of its own being replaced.
+Steam is the case that exists today: its window paints black because Chromium
+composites in a separate GPU process, and the only way to pass the switch that
+moves the compositor in-process is to stand in front of the executable.
+[`steam-rendering.md`](steam-rendering.md) has the evidence.
+
+This is the most invasive thing `install` does, so it is bounded:
+
+* **It says what it is about to do, and why, before it does it.** The whole
+  reason is printed, not a one-line summary.
+* **Nothing is deleted.** The program's own file is copied beside itself —
+  Steam's `steamwebhelper.exe` becomes `steamwebhelper-real.exe` — and the
+  stand-in launches it.
+* **`protium install <name> --undo` puts it back**, byte for byte, and removes
+  the copy.
+* **It is idempotent and self-repairing.** Running `install` on software that
+  is already installed does not reinstall it; it checks the fix and puts it
+  back if it is gone. Steam replaces the file whenever it updates itself, so
+  "the window went black again" is answered by re-running the same command.
+* **It never overwrites the backup with a stand-in.** A stand-in from an older
+  protium is recognised and replaced in place, because overwriting the backup
+  would destroy the only copy of the program's own binary.
+
+The stand-in is not a binary checked into this repository. It is
+[`src/webhelper.zig`](../src/webhelper.zig), about eighty lines, cross-compiled
+to `x86_64-windows` by `build.zig` and embedded in the protium binary — Zig
+cross-compiles to Windows with nothing extra installed, so the same `zig build`
+produces both. protium stays one file, and the PE it writes is one you can read
+the source of.
+
+A program with a fix still has to earn `verified` on its own evidence. The fix
+is described in the entry; it is not a substitute for having run the thing.
 
 ### Why there is no pinned checksum
 
@@ -96,8 +132,9 @@ and it does not read as `4096 bytes` next to an expected two million.
 *Measured 2026-09-06, against Wine 11.0 built from `crossover-sources-26.3.0`,
 on an M4 Mac running macOS 26.6.1.*
 
-This is the reason `steam` is `blocked` rather than `verified`, and it is a
-fault in **prefix creation**, not in Steam.
+This is a fault in **prefix creation**, not in Steam. Steam itself is
+`verified` — it installs, signs in, renders and launches games — but only in a
+prefix that already has a 32-bit side, because Valve's installer needs one.
 
 `SteamSetup.exe` is a 32-bit PE — machine `0x014c` in its COFF header, which
 `protium install` now reads before spawning anything. Running it in a prefix

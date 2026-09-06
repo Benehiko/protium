@@ -25,6 +25,11 @@ const catalog = @import("catalog.zig");
 const fetch = @import("fetch.zig");
 const pe = @import("pe.zig");
 
+/// The stand-in `steamwebhelper.exe`, built for x86_64-windows from
+/// `src/webhelper.zig` by this repository's own `build.zig` and embedded here.
+/// Nothing is vendored: it is compiled from source beside everything else.
+const webhelper_shim = @embedFile("webhelper_shim");
+
 const protium_version = "0.1.0";
 
 /// Rosetta 2's runtime lives here when it is installed, and nowhere else.
@@ -62,6 +67,7 @@ const usage =
     \\  --shell <name>    fish, zsh, bash or posix. Defaults to $SHELL.
     \\  --force           install: run the installer even if it is already there.
     \\  --refresh         install: download again rather than reusing the copy.
+    \\  --undo            install: put back the program's own file protium replaced.
     \\
     \\Neither half of the environment is shipped here: the Wine is built from
     \\CodeWeavers' published sources (docs/wine-build.md) and D3DMetal comes
@@ -135,6 +141,8 @@ const Options = struct {
     force: bool = false,
     /// `install`: fetch the installer again rather than reusing the download.
     refresh: bool = false,
+    /// `install`: put the program's own file back and remove protium's.
+    undo: bool = false,
     /// Everything that was not a recognised option.
     positional: []const []const u8 = &.{},
     /// An option that was given without its value, or one this command does
@@ -166,6 +174,10 @@ fn parseOptions(
         }
         if (std.mem.eql(u8, arg, "--refresh")) {
             opts.refresh = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--undo")) {
+            opts.undo = true;
             continue;
         }
         const target: *?[]const u8 = if (std.mem.eql(u8, arg, "--shell"))
@@ -816,9 +828,23 @@ fn runInstall(
     try printIndented(w, "  ", app.evidence);
     try w.writeAll("\n");
 
+    // Undoing is about the fix, not the install: protium never uninstalls
+    // someone's software, it only puts back the file it replaced.
+    if (opts.undo) {
+        if (!already) {
+            try w.print("{s} is not installed in this prefix, so there is nothing to undo.\n", .{app.name});
+            return 1;
+        }
+        return undoFix(arena, io, res, app, w);
+    }
+
     if (already and !opts.force) {
         try w.print("Already installed: {s}\n", .{app.installed});
-        try w.writeAll("Run it again with --force to reinstall over it.\n\n");
+        // The fix is still checked: Steam replaces the file protium wrote
+        // whenever it updates itself, and re-running this command is how it
+        // comes back.
+        if (try applyFix(arena, io, res, app, w) != 0) return 1;
+        try w.writeAll("Run with --force to reinstall over it.\n\n");
         try printLaunch(w, app, res.prefix.name);
         return 0;
     }
@@ -911,6 +937,8 @@ fn runInstall(
         try w.writeAll("Either it installs somewhere else than the catalogue records, or it did nothing.\n");
         return 1;
     }
+    if (try applyFix(arena, io, res, app, w) != 0) return 1;
+
     if (app.notes.len != 0) {
         try w.writeAll("\n");
         try printIndented(w, "", app.notes);
@@ -918,6 +946,121 @@ fn runInstall(
     try w.writeAll("\n");
     try printLaunch(w, app, res.prefix.name);
     return 0;
+}
+
+/// Put protium's stand-in in place of the program's own file, keeping the
+/// original beside it.
+///
+/// This is the most invasive thing `install` does, so it explains itself
+/// before it acts, never deletes anything, and is undone by `--undo`. It is
+/// also idempotent and self-repairing: Steam replaces the file whenever it
+/// updates, and running the command again puts the fix back without losing
+/// track of which copy is Valve's.
+fn applyFix(
+    arena: std.mem.Allocator,
+    io: Io,
+    res: Resolution,
+    app: *const catalog.App,
+    w: *Io.Writer,
+) !u8 {
+    const fix = app.fix orelse return 0;
+
+    const target = catalog.hostPath(arena, res.prefix.dir, fix.target) catch {
+        try w.print("protium install: {s} is not on C:\n", .{fix.target});
+        return 1;
+    };
+    const backup = catalog.hostPath(arena, res.prefix.dir, fix.backup) catch {
+        try w.print("protium install: {s} is not on C:\n", .{fix.backup});
+        return 1;
+    };
+    if (!res.sess.exists(target)) {
+        try w.print("protium install: {s} is not there, so there is nothing to replace.\n", .{fix.target});
+        return 1;
+    }
+
+    switch (try stateOf(io, target)) {
+        .current => {
+            try w.print("\nThe fix is already in place: {s}\n", .{fix.target});
+            return 0;
+        },
+        .older_standin => {
+            // An earlier protium wrote this. The backup beside it is still the
+            // program's own file, so it must not be overwritten with a
+            // stand-in — that would lose the only copy of the real binary.
+            try Io.Dir.cwd().writeFile(io, .{ .sub_path = target, .data = webhelper_shim });
+            try w.print("\nUpdated protium's stand-in at {s}\n", .{fix.target});
+            return 0;
+        },
+        .theirs => {},
+    }
+
+    try w.writeAll("\nprotium is about to replace one of this program's files:\n\n");
+    try w.print("  {s}\n", .{fix.target});
+    try w.print("  kept as {s}\n\n", .{fix.backup});
+    try printIndented(w, "  ", fix.why);
+
+    try copyFile(io, target, backup);
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = target, .data = webhelper_shim });
+
+    try w.writeAll("\nDone. `protium install ");
+    try w.print("{s} --undo` puts the original back.\n", .{app.name});
+    return 0;
+}
+
+fn undoFix(
+    arena: std.mem.Allocator,
+    io: Io,
+    res: Resolution,
+    app: *const catalog.App,
+    w: *Io.Writer,
+) !u8 {
+    const fix = app.fix orelse {
+        try w.print("protium install: {s} has no fix to undo.\n", .{app.name});
+        return 0;
+    };
+    const target = try catalog.hostPath(arena, res.prefix.dir, fix.target);
+    const backup = try catalog.hostPath(arena, res.prefix.dir, fix.backup);
+
+    if (!res.sess.exists(backup)) {
+        try w.print("protium install: there is no {s} to restore.\n", .{fix.backup});
+        try w.writeAll("Either the fix was never applied here, or it has already been undone.\n");
+        return 1;
+    }
+
+    try copyFile(io, backup, target);
+    Io.Dir.cwd().deleteFile(io, backup) catch {};
+    try w.print("Restored {s}\n", .{fix.target});
+    try w.writeAll("Steam will look right again on its own terms, and paint black.\n");
+    try w.print("Put the fix back with: protium install {s}\n", .{app.name});
+    return 0;
+}
+
+/// What is currently at the path a fix replaces.
+const FixState = enum {
+    /// Byte for byte the stand-in this protium carries.
+    current,
+    /// A stand-in from another protium: small, and carrying the switch it
+    /// exists to add. Recognised so that the program's own backup is not
+    /// overwritten with a stand-in.
+    older_standin,
+    /// The program's own file.
+    theirs,
+};
+
+fn stateOf(io: Io, path: []const u8) !FixState {
+    // Only ever as much as the stand-in itself: the file being examined may be
+    // the program's own, which is megabytes.
+    var buf: [64 * 1024]u8 = undefined;
+    const limit = @min(buf.len, webhelper_shim.len + 1);
+    const n = readHead(io, path, buf[0..limit]) catch return .theirs;
+
+    if (n == webhelper_shim.len and std.mem.eql(u8, buf[0..n], webhelper_shim)) return .current;
+    // A real webhelper is several megabytes, so anything that fits in the
+    // buffer and mentions the switch is one of protium's.
+    if (n < limit and std.mem.indexOf(u8, buf[0..n], catalog.webhelper.switch_added) != null) {
+        return .older_standin;
+    }
+    return .theirs;
 }
 
 /// The catalogue, as a table. `confidence` is printed beside every row rather
@@ -958,6 +1101,17 @@ fn printLaunch(w: *Io.Writer, app: *const catalog.App, prefix_name: []const u8) 
         for (app.launch_args) |a| {
             try w.print("\n  {s}\n", .{a.flag});
             try printWrapped(w, "      ", a.why);
+        }
+    }
+    if (app.fix) |fix| {
+        if (fix.needs_launch_args) {
+            try w.writeAll(
+                \\
+                \\Launching it any other way undoes the fix: the program puts its own
+                \\file back, and the next start paints black again. Running `protium
+                \\install
+            );
+            try w.print(" {s}` puts it back.\n", .{app.name});
         }
     }
 }
