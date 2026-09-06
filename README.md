@@ -132,10 +132,10 @@ Rosetta. That is forced, not a choice — see [docs/d3dmetal.md](docs/d3dmetal.m
 Early, and honest about which is which:
 
 * **Working** — the Wine build recipe, `protium doctor`, `protium redist`, and
-  everything on this page about prefixes and launching. Elden Ring reaches its
-  title screen on a protium-built Wine with no CrossOver runtime involved, with
-  the Windows Steam client signed in offline —
-  [docs/steam-login.md](docs/steam-login.md) has the recipe.
+  everything on this page about prefixes and launching. Elden Ring *plays* on a
+  protium-built Wine with no CrossOver runtime involved — save loaded, world
+  rendering, character responding to input, with the Windows Steam client
+  signed in offline. [docs/steam-login.md](docs/steam-login.md) has the recipe.
 * **Working with a workaround** — signing the Windows Steam client in. The
   online path fails inside one call in `CCMInterface::LogOn()`; offline mode
   sidesteps it and is enough to launch a game. Both are in

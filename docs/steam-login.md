@@ -11,8 +11,9 @@ with D3DMetal 4.0b2, on an M4 Mac running macOS 26.6.1.*
 ## The short version
 
 A game does not need Steam to be online. It needs Steam to be *running and
-signed in*, and offline mode satisfies that. Elden Ring reaches its title
-screen this way with no CrossOver runtime involved. See
+signed in*, and offline mode satisfies that. Elden Ring plays this way — title
+screen, save loaded, world rendering, character responding to input — with no
+CrossOver runtime involved. See
 [Offline mode](#offline-mode-the-route-that-works) below.
 
 The online path is still broken, and the fault is one call.
@@ -147,8 +148,20 @@ cd ".../steamapps/common/ELDEN RING/Game"
 beside the executable; the running client then registers the app and the game's
 own restart check is satisfied.
 
-This reaches the title screen. D3DMetal serves the Direct3D 12 calls and the
-Metal shader converter compiles the shaders, both of them logging as they go:
+This reaches actual gameplay. The game opens on its title screen, then reports
+
+```
+A connection error occurred. Unable to start in online mode.
+Starting in offline mode.
+```
+
+which is the correct and expected consequence of an offline Steam — the title
+menu then reads `OFFLINE` beside `App Ver. 1.16.2`. `CONTINUE` loads the save
+and the world draws: full HUD, foliage, rain and ember particles, terrain to
+the horizon, and the character moves under keyboard input.
+
+D3DMetal serves the Direct3D 12 calls and the Metal shader converter compiles
+the shaders, both of them logging as they go:
 
 ```
 [D3DMetal:LOG][EndQuery_block_invoke] Unsupported: ID3D12GraphicsCommandListMTL::EndQuery - Type = 2
@@ -156,6 +169,27 @@ Metal shader converter compiles the shaders, both of them logging as they go:
 ```
 
 Both messages are noise from features the game asks for and does not need.
+
+## Driving the game without touching the keyboard
+
+Worth knowing when scripting a check: **AppleScript key events do not reach
+Wine.** `System Events key code …` returns success and does nothing, even with
+the game frontmost and holding focus — confirmed by querying System Events,
+which reported the process as `frontmost: true` with one window while the title
+screen ignored every keypress.
+
+What works is posting the event at the HID level, which is what real hardware
+does:
+
+```c
+CGEventRef down = CGEventCreateKeyboardEvent(NULL, keycode, true);
+CGEventPost(kCGHIDEventTap, down);
+```
+
+A dozen lines of C against `ApplicationServices` is enough, and the game then
+responds to keypresses and to keys held for a duration. This is the difference
+between "the window is up" and "the game is playable", and only the second one
+is worth claiming.
 
 ## Two traps this cost time to find
 
