@@ -10,5 +10,8 @@
         "src",
         "docs",
         "README.md",
+        "LICENSE",
+        "NOTICE",
+        "THIRD-PARTY-NOTICES.md",
     },
 }

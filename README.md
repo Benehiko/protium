@@ -2,16 +2,15 @@
 
 **Run Windows games on an Apple silicon Mac.** macOS only.
 
-> ### Use CrossOver instead, unless you want to build this yourself
+> [!IMPORTANT]
+> **To just play a game this afternoon, buy
+> [CrossOver](https://www.codeweavers.com/crossover).** It ships both halves
+> pre-built and supported.
 >
 > protium makes *you* download Apple's Game Porting Toolkit and build Wine from
 > source — about an hour, once. That is the point: you end up with an
 > environment you assembled and can inspect, costing nothing and phoning
 > nowhere.
->
-> To just play a game this afternoon, buy
-> [CrossOver](https://www.codeweavers.com/crossover). It ships both halves
-> pre-built and supported.
 
 A Windows game needs two things macOS lacks: a Windows to run in, and something
 to turn Direct3D into Metal. Both are free — Wine from CodeWeavers' published
@@ -28,8 +27,11 @@ Single-player games only. No anti-cheat.
   and the rest. Nothing is installed onto your Mac; it all goes to a scratch
   directory you delete afterwards.
 * Apple's free [Evaluation environment for Windows
-  games](https://developer.apple.com/games/game-porting-toolkit/). protium does
-  not redistribute it, so you download it yourself.
+  games](https://developer.apple.com/games/game-porting-toolkit/), nested
+  inside the Game Porting Toolkit DMG. Needs a signed-in Apple developer
+  account; the exact URL tested, and why it may not resolve for you, are in
+  [docs/d3dmetal.md](docs/d3dmetal.md). protium does not redistribute it, so
+  you download it yourself.
 * [Zig](https://ziglang.org/download/) 0.16.0 or newer, to build protium.
 * Rosetta 2. D3DMetal is x86-64 only, so the whole Wine is
   ([docs/d3dmetal.md](docs/d3dmetal.md)).
@@ -42,8 +44,10 @@ cd protium
 zig build --prefix ~/.local -Doptimize=ReleaseFast
 ```
 
-One binary, at `~/.local/bin/protium`. If `protium version` fails afterwards,
-`~/.local/bin` is not on your `PATH`.
+One binary, at `~/.local/bin/protium`.
+
+> [!NOTE]
+> If `protium version` fails afterwards, `~/.local/bin` is not on your `PATH`.
 
 **Then build the environment, in order:**
 
@@ -56,9 +60,12 @@ One binary, at `~/.local/bin/protium`. If `protium version` fails afterwards,
 | 5 | `protium shell-init` — prints one line for your shell's rc file | seconds |
 
 Step 2 is the only genuinely technical part; the recipe is written out command
-by command, including the three mistakes that each cost an hour to find. Step 3
-has two possible install methods and one of them destroys the Wine you just
-built — protium looks at the destination and prints the correct one.
+by command, including the three mistakes that each cost an hour to find.
+
+> [!WARNING]
+> Step 3 has two possible install methods, and **one of them destroys the Wine
+> you just spent an hour building**. protium looks at the destination and
+> prints the correct one — read what it prints before running it.
 
 `protium status` shows where you are and what comes next, at any point.
 
@@ -66,17 +73,19 @@ built — protium looks at the destination and prints the correct one.
 
 ### Install Steam
 
-Set `WINEMSYNC=1` in the prefix's `protium.conf` **first**. Steam's UI fails
-silently without it, in a way that looks like a network fault
-([why](docs/wine-build.md#winemsync1-is-not-optional)).
+> [!WARNING]
+> Set `WINEMSYNC=1` in the prefix's `protium.conf` **before** installing.
+> Steam's UI fails silently without it, in a way that looks like a network
+> fault ([why](docs/wine-build.md#winemsync1-is-not-optional)).
 
 ```sh
 curl -Lo /tmp/SteamSetup.exe https://cdn.akamai.steamstatic.com/client/installer/SteamSetup.exe
 protium run /tmp/SteamSetup.exe
 ```
 
-Sign in **online, once**, so your credentials and game licences cache. Then
-install your game from Steam's UI as normal.
+> [!NOTE]
+> Sign in **online, once**, so your credentials and game licences cache. Then
+> install your game from Steam's UI as normal.
 
 ```sh
 protium run "C:\Program Files (x86)\Steam\steam.exe"
@@ -96,13 +105,14 @@ Add these to your account's block in
 "SkipOfflineModeWarning"  "1"
 ```
 
-Those flags are necessary but **not sufficient**: offline mode is chosen by
-Steam's CEF login page, which often never renders here, leaving the client
-logged off forever. Start it on the legacy login path instead:
-
-```sh
-protium run "C:\Program Files (x86)\Steam\steam.exe" -noreactlogin
-```
+> [!IMPORTANT]
+> Those flags are necessary but **not sufficient**. Offline mode is chosen by
+> Steam's CEF login page, which often never renders here, leaving the client
+> logged off forever. Start it on the legacy login path instead:
+>
+> ```sh
+> protium run "C:\Program Files (x86)\Steam\steam.exe" -noreactlogin
+> ```
 
 ### Run Elden Ring
 
@@ -118,12 +128,14 @@ SteamAppId=1245620 protium run \
 `SteamAppId` is what the game's own `SteamAPI_Init` reads when there is no
 `steam_appid.txt` beside the executable.
 
-The title screen reports `A connection error occurred. Unable to start in
-online mode.` and the menu reads `OFFLINE`. That is correct and expected.
-`CONTINUE` loads the save and plays.
+> [!NOTE]
+> The title screen reports `A connection error occurred. Unable to start in
+> online mode.` and the menu reads `OFFLINE`. **That is correct and expected.**
+> `CONTINUE` loads the save and plays.
 
-If instead the game exits immediately with `connect to global user failed`,
-Steam is not signed in — see the offline step above.
+> [!TIP]
+> If instead the game exits immediately with `connect to global user failed`,
+> Steam is not signed in — see the offline step above.
 
 ## Everyday use
 
@@ -193,11 +205,24 @@ formatting and a build — and leaves the test suite to CI. `git commit
 
 ## Licensing
 
-protium's own code is this repository's business. The two halves it assembles
-are not:
+protium's own code is **[Apache 2.0](LICENSE)**. It vendors nothing: no
+dependencies, no bundled sources, and no linking against either half it
+assembles.
+
+The two halves it assembles are not protium's to license, and their terms are
+recorded with the versions and evidence behind them in
+**[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)**:
 
 * **Wine / CrossOver sources** are LGPL. CodeWeavers publish them because the
-  licence requires it; building and using them is what the licence is for.
+  licence requires it; building and using them is what the licence is for. If
+  you go on to *redistribute* a Wine you built, the LGPL's conditions come with
+  it — protium's Apache licence does not cover those binaries.
 * **D3DMetal is Apple's**, under the licence in Apple's download. protium reads
-  and installs a copy you obtained yourself. It does not ship one, and neither
-  should anything built from this repository.
+  and installs a copy you obtained yourself.
+
+> [!IMPORTANT]
+> protium ships no part of Apple's redistributable, and neither should anything
+> built from this repository.
+
+protium is an independent project, not affiliated with or endorsed by Apple,
+CodeWeavers, the Wine project or Valve.

@@ -1,0 +1,12 @@
+protium
+Copyright 2026 Alano Terblanche
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+protium distributes no third-party code. It builds and installs software you
+obtain yourself — Wine from CodeWeavers' published CrossOver sources, and
+D3DMetal from Apple's Game Porting Toolkit — neither of which is redistributed
+by this repository or by anything built from it.
+
+The terms those components carry, with the versions and evidence behind each
+claim, are recorded in THIRD-PARTY-NOTICES.md.

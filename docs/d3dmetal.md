@@ -1,6 +1,25 @@
 # D3DMetal: what Apple actually ships
 
-Verified against **Game Porting Toolkit 4.0 beta 2**, downloaded 2026-09-05.
+Verified against **Game Porting Toolkit 4.0 beta 2**, downloaded 2026-09-05
+from:
+
+```
+https://download.developer.apple.com/Developer_Tools/Game_Porting_Toolkit_4.0_beta_1/Game_Porting_Toolkit_4.0_beta_2.dmg
+```
+
+Two things about that URL. It requires a signed-in Apple developer account —
+an unauthenticated `curl` gets an HTML redirect, not a DMG, and the usual
+symptom is a "disk image" of a few kilobytes that will not mount. And the
+directory says `beta_1` while the file says `beta_2`: that is Apple's, not a
+typo here, so do not "correct" the path.
+
+Apple does not keep old betas at stable URLs, and the version this document
+describes will eventually stop resolving. Treat the link as the evidence for
+what was tested rather than as a permanent download, and find the current
+release through [Apple's Game Porting Toolkit
+page](https://developer.apple.com/games/game-porting-toolkit/). If you land on
+a different version, the shim inventory below is the thing to re-check — it
+changes between releases.
 
 ## The download contains no Wine
 
