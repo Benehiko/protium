@@ -211,11 +211,13 @@ Early, and honest about which is which.
   size and SHA-256 of what arrived, configures the prefix, runs the installer,
   applies the fixes a program needs here, and refuses when it can see the
   installer cannot run. [docs/install.md](docs/install.md).
-* **Working, with a file replaced** — Steam's window. Chromium's display
-  compositor runs in a separate GPU process, and nothing it composites reaches
-  the window here; protium writes a stand-in `steamwebhelper.exe` that adds
-  `--in-process-gpu`, built from source in this repository. Reversible with
-  `protium install steam --undo`
+* **Worked around, not fixed** — CEF rendering. Chromium's display compositor
+  runs in a separate GPU process and nothing it composites reaches the window
+  here, so Steam paints black. protium writes a stand-in `steamwebhelper.exe`
+  that adds `--in-process-gpu`, which works but is the wrong place for the fix:
+  it edits a Steam install protium does not own, a Steam update undoes it, and
+  every other CEF program still gets nothing. The real fix is a Wine patch.
+  Reversible with `protium install steam --undo`
   ([docs/steam-rendering.md](docs/steam-rendering.md)).
 * **Broken, and diagnosed** — 32-bit programs in a prefix `protium prefix new`
   made. `wineboot` leaves `syswow64` empty, so nothing 32-bit starts, and

@@ -76,7 +76,11 @@ Some software will not work here without a file of its own being replaced.
 Steam is the case that exists today: its window paints black because Chromium
 composites in a separate GPU process, and the only way to pass the switch that
 moves the compositor in-process is to stand in front of the executable.
-[`steam-rendering.md`](steam-rendering.md) has the evidence.
+
+**This is a workaround and should not outlive its cause.** The fault is in
+Wine, not in Steam, and fixing it in Wine would remove this whole mechanism and
+fix every CEF application at once. [`steam-rendering.md`](steam-rendering.md)
+says why the current shape is wrong and what the real fix looks like.
 
 This is the most invasive thing `install` does, so it is bounded:
 
