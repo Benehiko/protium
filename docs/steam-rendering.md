@@ -25,6 +25,81 @@ The failure is inside Chromium's presentation path, after compositing and
 before the window: Chromium believes it composited a frame, and nothing
 reaches the `HWND`.
 
+**The single most useful fact, from the control below: when this worked, there
+was no GPU process at all.** Every protium run has one. Chromium keeps a GPU
+process for its display compositor even with `--disable-gpu`, so the switch
+that would reproduce the working configuration is `--in-process-gpu` — and
+Steam does not forward it.
+
+## The control: the same Steam, under CrossOver
+
+The prefix used throughout this file *is a copy of a CrossOver bottle*, so the
+registry, the Steam install and the settings are identical on both sides. The
+only variable is the Wine. That makes CrossOver's own logs — still on disk,
+and still readable after the trial expires — a real control rather than an
+anecdote.
+
+CrossOver's `logs/cef_log.txt` covers sessions from 2026-08-21 to 2026-09-05,
+on the same Chromium (126.0.6478.183), and contains **zero** GPU-related lines.
+No `GPU process exited unexpectedly`, no ANGLE, no SwiftShader, nothing. Its
+`logs/webhelper_gpu.txt` is 822 bytes for six sessions and holds only:
+
+```
+Client version: no bootstrapper found
+Disabling GPU acceleration: Disabled/CommandLine
+```
+
+with no report body, because there was no GPU process to report on. protium's
+copy of the same file, from the same prefix, is 2.3 MB of full GPU reports.
+
+Under protium the same `-cef-disable-gpu` produces the *same* first line and
+then one more:
+
+```
+Disabling GPU acceleration: Disabled/CommandLine
+GPU process started: start count: 0
+```
+
+That extra line is the whole difference in one place. What has not been
+established is *why* Chromium starts one here and not there — the Steam client
+build differs between the two (1785799196 under CrossOver in August against
+1788652215 here), so the client's own behaviour is a live confound.
+
+### Things the control ruled out
+
+* **`dcomp.dll` is not it.** CrossOver's is 22 KB, protium's is 90 KB, and they
+  export the same six symbols. Copying CrossOver's over protium's in the
+  runtime's `lib/wine/x86_64-windows` changes nothing: Steam starts, signs in,
+  and the window is still black.
+* **The module set is not it.** The only DLLs protium ships that CrossOver does
+  not are `nvapi64.dll`, `nvngx-on-metalfx.dll` and `sppc.dll`; the rest of the
+  difference is `.a` import libraries. CrossOver has `winemetal.dll`, `vkd3d`,
+  `winegstreamer.dll` and `winelib.dll` that protium lacks, none of them in the
+  window-presentation path.
+* **Vulkan is not it, and adding it makes things worse.** Steam's own
+  `steamsysinfo.txt` shows that under CrossOver it saw a GPU through MoltenVK,
+  while every protium run logs `Failed to load libvulkan.1.dylib`. CrossOver's
+  `lib64/libMoltenVK.dylib` is x86-64, and dropping a copy into the runtime's
+  `lib` as `libvulkan.1.dylib` does work — protium already puts that directory
+  on `DYLD_FALLBACK_LIBRARY_PATH` for FreeType, and it is the last path Wine
+  tries, so the load errors disappear entirely. But the webhelper then never
+  finishes starting and Steam never reaches its login state. Removing it again
+  restores the previous behaviour.
+
+### Why the decisive experiment has not been run
+
+The switch to test is `--in-process-gpu` on the browser process, and Steam
+forwards only its own six `-cef-*` flags. The way in is to put a stand-in at
+`bin/cef/cef.win64/steamwebhelper.exe` that re-launches the real binary with
+the switch appended — about forty lines, and it builds fine.
+
+**Steam repairs that file from its own package on every launch**, so the
+stand-in is replaced before it ever runs. Making it stick means making the file
+immutable (`chflags uchg`) or the directory unwritable, which is a change to
+someone's Steam install that should be asked for rather than assumed. Until
+then this remains the open experiment, and the one most likely to answer the
+question.
+
 ## What is established
 
 **Wine paints windows correctly.** `protium run winecfg` renders completely —
@@ -102,6 +177,9 @@ Every row was run, and the window screenshotted afterwards.
 | `WINEDLLOVERRIDES=dcomp=d` | The webhelper never starts. `dcomp.dll` is a load-bearing import, not an optional one. |
 | A stand-in `dcomp.dll` returning `E_NOTIMPL` from every entry point | Same: no webhelper, no window. Chromium requires a DirectComposition device that succeeds. |
 | Deleting `htmlcache` | No change. |
+| CrossOver's `dcomp.dll` swapped into the runtime | Steam starts and signs in. **Still black.** |
+| CrossOver's x86-64 MoltenVK as `<runtime>/lib/libvulkan.1.dylib` | Wine loads it — the `libvulkan` errors stop — but the webhelper never finishes starting and Steam never signs in. **Worse.** |
+| A stand-in `steamwebhelper.exe` adding `--in-process-gpu` | Steam repairs the file from its package before it runs. Not answered. |
 | `-cef-disable-gpu-compositing` | **Steam does not pass it on.** Only the six `-cef-*` flags in the table below reach CEF; anything else is dropped silently. |
 | Restarting into a fresh client (Steam self-updated mid-session, 1788400362 → 1788652215) | No change. |
 | Watching for a JavaScript failure | None. The page's own logs show a complete, successful start-up. |
@@ -128,24 +206,28 @@ inspect what the compositor thinks it produced.
 
 ## Where to look next
 
-The two experiments that would settle the DirectComposition theory both fail
-because Chromium will not start without a DComp device that succeeds. The
-useful version is therefore not "remove `dcomp`" but "**implement enough of
-it**": a `dcomp.dll` whose `DCompositionCreateDevice2/3` return a device that
-Chromium accepts and whose visual tree actually blits to the `HWND`. That is a
-Wine-side change, and it would fix this for every CEF application rather than
-for Steam.
+In order of how much each would settle:
 
-Failing that, the two questions worth answering first:
-
-1. **What exactly faults at `0xC0000005` in the GPU process?** Chromium's own
+1. **Get `--in-process-gpu` onto the browser process.** The control says the
+   working configuration had no GPU process; this is the switch that removes
+   it. The stand-in above is written and builds; it needs Steam's repair to be
+   prevented for one run.
+2. **What exactly faults at `0xC0000005` in the GPU process?** Chromium's own
    crash handler catches it, so Wine never prints a backtrace and
-   `-nocrashdialog` suppresses the rest. Running the webhelper's GPU process
-   by hand, outside Steam, would let Wine's handler report the module and
-   offset.
-2. **Does any other CEF application paint here?** That separates "Steam's
-   window" from "CEF under `winemac.drv`" in one test, and no test in this
-   file does.
+   `-nocrashdialog` suppresses the rest. Launching the webhelper's GPU process
+   by hand, outside Steam, would let Wine's handler name the module and offset.
+3. **Does any other CEF application paint here?** That separates "Steam's
+   window" from "CEF under `winemac.drv`" in one test, and nothing in this file
+   does.
+4. **Rule the Steam client version in or out.** The control ran client
+   1785799196; this ran 1788652215. Installing the older client into a copy of
+   the prefix and running it under the protium Wine would say whether the
+   regression is Valve's or ours — and it is the cheapest of the four, if a
+   copy of that build can still be obtained.
+
+The DirectComposition theory is not dead, but it is no longer the leading one:
+swapping in CrossOver's `dcomp.dll` — the implementation that was in use when
+this worked — changes nothing.
 
 ## What to do meanwhile
 
