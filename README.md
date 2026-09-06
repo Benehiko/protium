@@ -1,36 +1,40 @@
 # protium
 
-**Run Windows games on an Apple silicon Mac.**
+**Run Windows games on an Apple silicon Mac.** macOS only.
 
-A Windows game needs two things macOS does not have: a Windows to run in, and
-something to turn its Direct3D graphics into Metal. Both are freely available —
-Wine, from published source, and D3DMetal, from Apple. Neither is packaged for
-you. protium assembles them, checks them, and then gets out of the way: one
-command to launch a game, and a terminal that already knows which Windows
-installation it belongs to.
+> ### Use CrossOver instead, unless you want to build this yourself
+>
+> protium makes *you* download Apple's Game Porting Toolkit and build Wine from
+> source — about an hour, once. That is the point: you end up with an
+> environment you assembled and can inspect, costing nothing and phoning
+> nowhere.
+>
+> To just play a game this afternoon, buy
+> [CrossOver](https://www.codeweavers.com/crossover). It ships both halves
+> pre-built and supported.
 
-Nothing here is rented, and nothing phones home. What you end up with is an
-environment you built and can inspect.
+A Windows game needs two things macOS lacks: a Windows to run in, and something
+to turn Direct3D into Metal. Both are free — Wine from CodeWeavers' published
+sources, D3DMetal from Apple — and neither is packaged for you. protium
+assembles them, checks them, and gets out of the way.
 
-## What you need
+Single-player games only. No anti-cheat.
 
-* An Apple silicon Mac (M1 or later) with Rosetta 2 installed.
-* Apple's free **Evaluation environment for Windows games**, from
-  <https://developer.apple.com/games/game-porting-toolkit/>. Apple's page
-  states which macOS version that release needs. protium does not redistribute
-  it, so you download it yourself.
-* An afternoon, once. Step 3 below builds Wine from source and is the only
-  genuinely technical part.
+## First step — install protium and build the environment
 
-protium is for single-player games. It does nothing about anti-cheat, and
-games that require it will not run.
+**Get the dependencies first:**
 
-## Installing
+* [What the Wine build needs](docs/wine-build.md#toolchain) — bison, mingw-w64
+  and the rest. Nothing is installed onto your Mac; it all goes to a scratch
+  directory you delete afterwards.
+* Apple's free [Evaluation environment for Windows
+  games](https://developer.apple.com/games/game-porting-toolkit/). protium does
+  not redistribute it, so you download it yourself.
+* [Zig](https://ziglang.org/download/) 0.16.0 or newer, to build protium.
+* Rosetta 2. D3DMetal is x86-64 only, so the whole Wine is
+  ([docs/d3dmetal.md](docs/d3dmetal.md)).
 
-### 1. Get protium
-
-protium is written in Zig, so you need [Zig](https://ziglang.org/download/)
-0.16.0 or newer to build it. This part takes seconds.
+**Build protium:**
 
 ```sh
 git clone https://github.com/Benehiko/protium
@@ -38,114 +42,142 @@ cd protium
 zig build --prefix ~/.local -Doptimize=ReleaseFast
 ```
 
-That puts a single binary at `~/.local/bin/protium`. If `protium version` does
-not work afterwards, `~/.local/bin` is not on your `PATH` yet.
+One binary, at `~/.local/bin/protium`. If `protium version` fails afterwards,
+`~/.local/bin` is not on your `PATH`.
 
-### 2. Check your Mac
+**Then build the environment, in order:**
 
-```sh
-protium doctor
-```
+| | Command | Takes |
+| --- | --- | --- |
+| 1 | `protium doctor` — checks every prerequisite at once | seconds |
+| 2 | Build Wine: **[docs/wine-build.md](docs/wine-build.md)** | ~1 hour, mostly unattended |
+| 3 | `protium redist "/Volumes/…/redist/lib" --into ~/.local/share/protium/runtimes/<name>/lib` | minutes |
+| 4 | `protium prefix new default` | minutes |
+| 5 | `protium shell-init` — prints one line for your shell's rc file | seconds |
 
-This reports every prerequisite at once, rather than stopping at the first
-thing missing, and says where each one comes from.
+Step 2 is the only genuinely technical part; the recipe is written out command
+by command, including the three mistakes that each cost an hour to find. Step 3
+has two possible install methods and one of them destroys the Wine you just
+built — protium looks at the destination and prints the correct one.
 
-### 3. Build the Wine half
+`protium status` shows where you are and what comes next, at any point.
 
-This is the long step: roughly an hour, mostly unattended, following the recipe
-in **[docs/wine-build.md](docs/wine-build.md)**. It is written out command by
-command, including the three mistakes that each cost an hour to find.
+## Quickstart — Steam, then Elden Ring
 
-Nothing gets installed onto your Mac by it — every build tool is fetched into a
-scratch folder you can delete afterwards.
+### Install Steam
 
-### 4. Add Apple's graphics half
-
-Open Apple's download, find the `redist/lib` folder inside it, and let protium
-check it and tell you how to install it:
-
-```sh
-protium redist "/Volumes/.../redist/lib" --into ~/.local/share/protium/runtimes/<name>/lib
-```
-
-There are two ways to install this folder and one of them destroys the Wine you
-just built. protium looks at the destination and prints the correct one. See
-[docs/d3dmetal.md](docs/d3dmetal.md).
-
-### 5. Create a Windows installation
+Set `WINEMSYNC=1` in the prefix's `protium.conf` **first**. Steam's UI fails
+silently without it, in a way that looks like a network fault
+([why](docs/wine-build.md#winemsync1-is-not-optional)).
 
 ```sh
-protium prefix new default
+curl -Lo /tmp/SteamSetup.exe https://cdn.akamai.steamstatic.com/client/installer/SteamSetup.exe
+protium run /tmp/SteamSetup.exe
 ```
 
-A *prefix* is one Windows installation — its own `C:` drive, its own registry,
-its own installed programs. You can have as many as you like; games that
-disagree about what they need get one each. This takes a few minutes.
-
-### 6. Make it automatic
+Sign in **online, once**, so your credentials and game licences cache. Then
+install your game from Steam's UI as normal.
 
 ```sh
-protium shell-init
+protium run "C:\Program Files (x86)\Steam\steam.exe"
 ```
 
-This prints one line to add to your shell's startup file. After that, every new
-terminal already points at your default prefix, so anything you launch from it
-lands in the right place without being told.
+### Every launch after that, offline
 
-At any point, `protium status` shows where you are and what the next step is.
+Online sign-in is broken here — it fails inside one call, and
+[docs/steam-login.md](docs/steam-login.md) names it. Offline mode sidesteps it
+entirely, and a game needs nothing more.
 
-## Using it
+Add these to your account's block in
+`<prefix>/drive_c/Program Files (x86)/Steam/config/loginusers.vdf`:
+
+```
+"WantsOfflineMode"        "1"
+"SkipOfflineModeWarning"  "1"
+```
+
+Those flags are necessary but **not sufficient**: offline mode is chosen by
+Steam's CEF login page, which often never renders here, leaving the client
+logged off forever. Start it on the legacy login path instead:
+
+```sh
+protium run "C:\Program Files (x86)\Steam\steam.exe" -noreactlogin
+```
+
+### Run Elden Ring
+
+Launch the game directly, with Steam signed in and running. `eldenring.exe`
+rather than `start_protected_game.exe` skips Easy Anti-Cheat, which does not
+work here anyway.
+
+```sh
+SteamAppId=1245620 protium run \
+  "C:\Program Files (x86)\Steam\steamapps\common\ELDEN RING\Game\eldenring.exe"
+```
+
+`SteamAppId` is what the game's own `SteamAPI_Init` reads when there is no
+`steam_appid.txt` beside the executable.
+
+The title screen reports `A connection error occurred. Unable to start in
+online mode.` and the menu reads `OFFLINE`. That is correct and expected.
+`CONTINUE` loads the save and plays.
+
+If instead the game exits immediately with `connect to global user failed`,
+Steam is not signed in — see the offline step above.
+
+## Everyday use
 
 ```sh
 protium run ~/Downloads/Setup.exe      # install something
-protium run "C:\Program Files\...\Game.exe"
+protium run "C:\Program Files\…\Game.exe"
 
 protium prefix list                    # your prefixes; * is the default
 protium prefix new skyrim              # another one
 protium use skyrim                     # make it the default
 ```
 
-Each prefix keeps its settings in a `protium.conf` file inside it — frame rate
-cap, ray tracing, Wine's own knobs — and they apply automatically to anything
-launched there. `protium prefix new` writes a commented starter file listing
-what you can set. Full details in **[docs/prefixes.md](docs/prefixes.md)**.
+A *prefix* is one Windows installation — its own `C:` drive, registry and
+programs. Games that disagree about what they need get one each.
+
+Each prefix keeps its settings in a `protium.conf` inside it — frame cap, ray
+tracing, Wine's own knobs — applied automatically to anything launched there.
+Full details in **[docs/prefixes.md](docs/prefixes.md)**.
 
 ## How it works
 
-An environment is exactly two pieces, from two different places:
-
 | Half | What it is | Where it comes from |
 | --- | --- | --- |
-| **Wine** | the Windows implementation — the loader, Win32, `winemac.drv` | CodeWeavers' published CrossOver sources (LGPL), built by you |
+| **Wine** | the Windows implementation — loader, Win32, `winemac.drv` | CodeWeavers' published CrossOver sources (LGPL), built by you |
 | **D3DMetal** | Direct3D 12/11 → Metal | Apple's Game Porting Toolkit |
 
-Neither is optional: Wine alone launches a Direct3D 12 game and renders
-nothing, and D3DMetal alone has no process to live in.
-[docs/why-not-proton.md](docs/why-not-proton.md) explains why there is no third
-option, and in particular why Proton cannot be ported here.
-
-Because D3DMetal is x86-64 only, the whole Wine is x86-64 and runs under
-Rosetta. That is forced, not a choice — see [docs/d3dmetal.md](docs/d3dmetal.md).
+Neither is optional: Wine alone renders nothing for a Direct3D 12 game, and
+D3DMetal alone has no process to live in. There is no third option — in
+particular Proton cannot be ported here, for reasons in
+[docs/why-not-proton.md](docs/why-not-proton.md).
 
 ## Status
 
-Early, and honest about which is which:
+Early, and honest about which is which.
 
 * **Working** — the Wine build recipe, `protium doctor`, `protium redist`, and
-  everything on this page about prefixes and launching. Elden Ring *plays* on a
-  protium-built Wine with no CrossOver runtime involved — save loaded, world
-  rendering, character responding to input, with the Windows Steam client
-  signed in offline. [docs/steam-login.md](docs/steam-login.md) has the recipe.
-* **Working with a workaround** — signing the Windows Steam client in. The
-  online path fails inside one call in `CCMInterface::LogOn()`; offline mode
-  sidesteps it and is enough to launch a game. Both are in
-  [docs/steam-login.md](docs/steam-login.md).
+  everything above about prefixes and launching. Elden Ring *plays* on a
+  protium-built Wine with no CrossOver runtime involved: save loaded, world
+  rendering, character responding to input.
+* **Working with a workaround** — signing the Windows Steam client in. Online
+  fails inside `CCMInterface::LogOn()`; offline mode plus `-noreactlogin`
+  works. Both in [docs/steam-login.md](docs/steam-login.md).
 * **Designed, not built** — talking to the *native* macOS Steam client the way
   Proton's `lsteamclient` does on Linux. The evidence, and the experiment that
   would settle it, are in [docs/steam-bridge.md](docs/steam-bridge.md).
 * **Not attempted** — anti-cheat.
 
-## Building and contributing
+**Performance**, on an M4: Elden Ring holds 33 fps at 2560×1440 with every
+setting on HIGH, and 59.7 fps — the game's own cap — at 1280×720 on the same
+scene. Quartering the pixels moving it that far means the limit is the GPU,
+not Rosetta and not the Direct3D-to-Metal translation. Measured with a mod
+runtime injected, which costs a little of its own.
+
+## Contributing
 
 ```sh
 zig build            # the binary, in zig-out/bin
@@ -154,11 +186,12 @@ zig fmt .            # formatting, enforced by the pre-commit hook
 ```
 
 The pre-commit hook is tracked in `.githooks/` rather than `.git/hooks/`, so it
-is reviewable and shared. Activate it per clone with `git config core.hooksPath
-.githooks`. It runs the fast checks only — formatting and a build — and leaves
-the test suite to CI. `git commit --no-verify` bypasses it.
+is reviewable and shared. Activate it per clone with
+`git config core.hooksPath .githooks`. It runs the fast checks only —
+formatting and a build — and leaves the test suite to CI. `git commit
+--no-verify` bypasses it.
 
-## Licensing, stated once
+## Licensing
 
 protium's own code is this repository's business. The two halves it assembles
 are not:

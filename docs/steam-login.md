@@ -16,6 +16,13 @@ screen, save loaded, world rendering, character responding to input — with no
 CrossOver runtime involved. See
 [Offline mode](#offline-mode-the-route-that-works) below.
 
+Start the client as `steam.exe -noreactlogin`. The offline-mode flags in
+`loginusers.vdf` are necessary but not sufficient on their own — the CEF
+login page has to render to choose offline mode, and when it does not, the
+client sits logged off forever. The legacy login path has no such
+dependency. See [The flags are necessary, not
+sufficient](#the-flags-are-necessary-not-sufficient--use--noreactlogin).
+
 The online path is still broken, and the fault is one call.
 
 ## The failure, stated precisely
@@ -169,6 +176,65 @@ the shaders, both of them logging as they go:
 ```
 
 Both messages are noise from features the game asks for and does not need.
+
+### The flags are necessary, not sufficient — use `-noreactlogin`
+
+Recorded 2026-09-06, on the same prefix that had signed in offline the night
+before. With both flags still set and correct, five consecutive client starts
+reached the end of UI init and then never began the login state machine at
+all: no `Starting login`, no `Start offline`, nothing written to
+`steamui_login.txt`, and `webhelper_js.txt` stopping dead after
+
+```
+SteamApp Init - Before Login total time: 474.68 ms
+Login: OnLoginStateChange  0 1 0 0
+```
+
+The tell is in `connection_log.txt`. A client that signed in offline logs the
+account's own ID:
+
+```
+[Logged Off, 0, 0] [U:1:<account>] CCMInterface::SetSteamID( [U:1:<account>] )
+[Logged Off, 0, 0] [U:1:<account>] LogOff()
+```
+
+A stuck one logs only the null ID, `SetSteamID( [U:1:0] )`, and never anything
+else. Connectivity is identical in both cases — the connectivity test passes
+either way — so a passing network test says nothing about whether the client
+signed in.
+
+What fixed it was starting the client on the legacy login path instead of the
+CEF one:
+
+```sh
+wine "C:\Program Files (x86)\Steam\steam.exe" -noreactlogin
+```
+
+Offline sign-in completed 20 seconds later, with `Start offline - 1` and
+`SetLoginState: Success`. This fits the black-window problem above: offline
+mode is chosen by the React login page, so a login page that never renders
+never chooses it, and `-noreactlogin` removes the dependency.
+
+Tried first, and neither made any difference: deleting the CEF cache at
+`drive_c/users/crossover/AppData/Local/Steam/htmlcache`, and adding
+`"MostRecent" "1"` to the login record. One success, so this is a workaround
+that worked rather than a settled explanation.
+
+### How a logged-off client looks to the game
+
+The game does not say "Steam is not signed in". It fails
+`SteamAPI_Init()` and exits:
+
+```
+[S_API] SteamAPI_Init(): Loaded 'steamclient64.dll' OK.
+[S_API FAIL] SteamAPI_Init() failed; connect to global user failed.
+```
+
+and then calls `ExitProcess(0)` before the title screen — a clean exit code,
+no crash, no error dialog. Under a mod loader this is worth knowing, because
+the loader's own injection completes normally first and its log looks
+perfectly healthy right up to that line. Read `connect to global user failed`
+as "the client is not signed in", not as a broken injection.
 
 ## Driving the game without touching the keyboard
 
