@@ -565,6 +565,29 @@ of the observed request pattern.
   changes *which* long name is first: index 0 becomes a 76-byte
   `{00000017-0000-0000-0000-4E6574446576}`, one of Wine's per-adapter network
   device links (`4E6574446576` is `"NetDev"`), and this host has 28 adapters.
+* **The object directory itself, and `NtQueryDirectoryObject`.** Ruled out by
+  the strongest control available: the same probe run under CrossOver 26.3,
+  which signs in on this host. Its walk is *identical* — the same
+  `STATUS_BUFFER_TOO_SMALL` on the first call with a 40-byte buffer, the same
+  146-byte HID name at index 0, the same `NetDev` links, the cursor advancing
+  the same way, `C:` a few entries either side of thirty-third. Whatever
+  diverges between the two builds, it is not this call and not this directory.
+* **The dangling `D:`, again.** CrossOver's Steam bottle carries the *same*
+  dead mappings — `d: -> /Volumes/Game Porting Toolkit` and
+  `d:: -> /dev/rdisk4s2`, both pointing at an ejected DMG — and reports `D:` in
+  its drive mask (`0x300000c` against protium's `0x200000c`; the only
+  difference is CrossOver's extra `Y:` mapped to the home directory). It signs
+  in anyway.
+
+Running the CrossOver client itself under `WINEDEBUG=+server`, to see whether
+it makes the same requests and merely escapes the loop, was attempted and did
+not work: `wine --cx-app`, `bin/wineloader` and `cxstart` all return without
+starting `steam.exe`, leaving an idle `winewrapper.exe` behind. The bottle's
+client appears to need CrossOver's own launcher. Probes copied into the bottle
+and run with `bin/wineloader` work fine — that is how the two results above
+were taken — provided `WINEMSYNC=1` is exported to match the running
+wineserver, or the loader exits with `msync_init Server is running with
+WINEMSYNC but this process is not`.
 
 ### Still unknown
 
@@ -588,9 +611,11 @@ Get the caller. `winedbg`'s unwinder faults immediately above
 produce. Keeping the Wine source tree from the build (rather than deleting the
 scratch directory) would also settle reading 1 versus reading 2 by inspection.
 
-Then compare against the CrossOver control, which signs in on the same host and
-the same prefix: does its `MachineIDInfoThread` complete, and does its
-`\DosDevices` enumeration look different?
+The CrossOver control has been half-taken (see *Ruled out*): its `\DosDevices`
+enumeration is identical, so the divergence is not there. The other half —
+does *its* `MachineIDInfoThread` complete, and does its client make the same
+requests — still needs a way to start the bottle's Steam from a shell with
+`WINEDEBUG` set. Every documented route returns without launching it.
 
 The other open question is whether this is the same underlying Wine fault as
 the CEF one in [`steam-rendering.md`](steam-rendering.md). Both are "a thread
