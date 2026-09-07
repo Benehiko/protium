@@ -75,18 +75,8 @@ records three times per press, and `logs/steamui_login.txt` records as
 
 with nothing after it. `connection_log.txt` for the same second shows
 `SetSteamID`, then `Schedule init returned 22`, then the `EConnect` loop again.
-Four presses on 2026-09-06 produced four identical pairs, and four more on
-2026-09-07 did the same. The button is a second route into `LogOn()`, so it
-lands on exactly the branch described below.
-
-**The button is not unresponsive, and the click is not being lost.** That
-distinction matters, because a click Steam never received and a click whose
-log-on never returns look the same on screen — nothing happens either way, and
-the natural reading is that the button cannot be pressed. The `UI Request: go
-online` line is the proof that it can: it is written when the click is
-received, so a press that reaches the log above has already crossed CEF, the
-window, and Steam's input handling intact. There is nothing to fix on the
-input side. Whatever is wrong is behind `Initiating LogOn`.
+Four presses on 2026-09-06 produced four identical pairs. The button is a
+second route into `LogOn()`, so it lands on exactly the branch described below.
 
 ## It is not the network
 
@@ -168,29 +158,6 @@ and the game's licence are cached. `logs/steamui_login.txt` then reports:
 
 `SetLoginState: Success`, and no `EConnect` lines at all — the loop is gone
 because nothing is trying to connect.
-
-### The flag does not stay set
-
-`loginusers.vdf` is Steam's file, and Steam rewrites it. An attempted online
-sign-in — pressing that button, or a launch that got as far as trying — leaves
-`"WantsOfflineMode" "0"` behind, and the next launch sits on the "Logging in…"
-splash in the loop, no matter what the file said when the session started. On
-2026-09-07 a session started with the flag at `"1"` and reached
-`SetLoginState: Success`; four presses of **go online** later, the same file
-read
-
-```
-"WantsOfflineMode"        "0"
-"SkipOfflineModeWarning"  "1"
-```
-
-so only the one flag is reset, and the warning-suppression survives.
-
-The client must be stopped before the flag is set again — `protium prefix
-stop`, then edit, then launch — because a running Steam overwrites the file
-from memory on its way out. With the flag back to `"1"` the launch reached
-`System startup time: 10.09 seconds`, then `LogOff()`, and `connection_log.txt`
-stopped growing entirely.
 
 With that client running, the game is launched directly rather than through
 Steam. Launching `eldenring.exe` instead of `start_protected_game.exe` also
