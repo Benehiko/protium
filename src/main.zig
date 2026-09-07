@@ -25,6 +25,7 @@ const catalog = @import("catalog.zig");
 const fetch = @import("fetch.zig");
 const pe = @import("pe.zig");
 const teardown = @import("teardown.zig");
+const removal = @import("removal.zig");
 
 /// The stand-in `steamwebhelper.exe`, built for x86_64-windows from
 /// `src/webhelper.zig` by this repository's own `build.zig` and embedded here.
@@ -47,10 +48,12 @@ const usage =
     \\Every day:
     \\  protium install <name>            Fetch and install known software.
     \\  protium install list              Show what protium knows how to install.
+    \\  protium install clean             Delete the installers protium downloaded.
     \\  protium run <program> [args...]   Launch something in the default prefix.
     \\  protium prefix list               Show the prefixes and which is default.
     \\  protium prefix new <name>         Create a prefix and boot it.
     \\  protium prefix stop [<name>]      Shut down the Wine running in a prefix.
+    \\  protium prefix remove <name>      Delete a prefix and everything in it.
     \\  protium use <name>                Make a prefix the default.
     \\  protium env                       Print the environment, as shell code.
     \\
@@ -69,6 +72,9 @@ const usage =
     \\  --shell <name>    fish, zsh, bash or posix. Defaults to $SHELL.
     \\  --force           install: run the installer even if it is already there.
     \\                    prefix stop: skip the polite request and signal at once.
+    \\                    prefix remove, install clean: delete without asking
+    \\                    first. It never deletes anything the question would
+    \\                    not have offered to.
     \\  --refresh         install: download again rather than reusing the copy.
     \\  --undo            install: put back the program's own file protium replaced.
     \\
@@ -512,7 +518,7 @@ fn writeDefaults(sess: session.Session, runtime_name: ?[]const u8, prefix_name: 
     var text: std.ArrayList(u8) = .empty;
     var body = std.Io.Writer.Allocating.fromArrayList(sess.arena, &text);
     const bw = &body.writer;
-    try bw.writeAll("# Written by `protium use`. KEY=VALUE, one per line; `#` is a comment.\n");
+    try bw.writeAll("# Written by protium. KEY=VALUE, one per line; `#` is a comment.\n");
     if (runtime_name) |r| try bw.print("runtime={s}\n", .{r});
     if (prefix_name) |p| try bw.print("prefix={s}\n", .{p});
 
@@ -537,8 +543,9 @@ fn runPrefix(
     if (std.mem.eql(u8, sub, "list")) return prefixList(arena, io, vars, w);
     if (std.mem.eql(u8, sub, "new")) return prefixNew(arena, io, vars, rest, w);
     if (std.mem.eql(u8, sub, "stop")) return prefixStop(arena, io, vars, rest, w);
+    if (std.mem.eql(u8, sub, "remove")) return prefixRemove(arena, io, vars, rest, w);
 
-    try w.print("protium prefix: no such subcommand `{s}` — try `list`, `new` or `stop`\n", .{sub});
+    try w.print("protium prefix: no such subcommand `{s}` — try `list`, `new`, `stop` or `remove`\n", .{sub});
     return 2;
 }
 
@@ -1012,6 +1019,414 @@ fn waitFor(io: Io, pid: std.c.pid_t, deadline_ms: i64) bool {
 /// How often a wait looks again. Short enough that a healthy shutdown is not
 /// padded out, long enough not to spin.
 const poll_step_ms = 50;
+
+// ---------------------------------------------------------------------------
+// prefix remove
+
+/// Delete a prefix and everything in it.
+///
+/// Three things stand between the command and the unlinking, and none of them
+/// is skippable by a flag:
+///
+///   * the path is built by `removal.prefixPath`, so it is a direct child of
+///     `<root>/prefixes` and nothing else can be named;
+///   * a prefix with a Wine running in it is refused, because a live
+///     wineserver holds the prefix open and deleting underneath it produces a
+///     half-removed tree and a process still writing into it;
+///   * the tree is measured and described before anything goes.
+///
+/// `--force` answers the question, and only the question.
+fn prefixRemove(
+    arena: std.mem.Allocator,
+    io: Io,
+    vars: *std.process.Environ.Map,
+    args: []const []const u8,
+    w: *Io.Writer,
+) !u8 {
+    const opts = try parseOptions(arena, args, false);
+    if (opts.bad) |b| return reportBadOption(w, "prefix remove", b);
+    if (opts.positional.len == 0) {
+        // Deliberately not the default prefix. Every other command falls back
+        // to it, and this is the one where falling back would delete
+        // something nobody named.
+        try w.writeAll("protium prefix remove: name the prefix — `protium prefix remove skyrim`\n");
+        try w.writeAll("There is no default here: what gets deleted is always spelled out.\n");
+        return 2;
+    }
+    const name = opts.positional[0];
+
+    const sess = session.Session.open(arena, io, vars) catch |err| switch (err) {
+        error.NoHome => {
+            try w.writeAll("protium: no HOME, and no PROTIUM_HOME to use instead\n");
+            return 1;
+        },
+        else => |e| return e,
+    };
+
+    const dir = removal.prefixPath(arena, sess.root, name) catch |err| switch (err) {
+        error.OutOfMemory => |e| return e,
+        error.NotAChild => {
+            try w.print("protium prefix remove: {s} does not name something inside {s}/{s}\n", .{
+                name, sess.root, layout.prefixes,
+            });
+            return 2;
+        },
+        error.Empty, error.Reserved, error.BadCharacter => |e| {
+            try w.print("protium prefix remove: {s} is not a usable name — {s}\n", .{
+                name, layout.nameProblem(e),
+            });
+            return 2;
+        },
+    };
+
+    if (!sess.exists(dir)) {
+        try w.print("protium prefix remove: there is no prefix named {s} under {s}/{s}\n", .{
+            name, sess.root, layout.prefixes,
+        });
+        const present = try sess.installed(layout.prefixes);
+        if (present.len > 0) {
+            try w.writeAll("These exist:\n");
+            for (present) |p| try w.print("  {s}\n", .{p});
+        }
+        return 1;
+    }
+
+    // A running prefix is refused rather than stopped. Stopping one means
+    // signalling processes, and a command that both signals and deletes is
+    // one whose failure modes cannot be reasoned about from its name. The
+    // command that does it is named instead — `--force` does not change this.
+    const server_pid = try findServer(arena, dir, w);
+    const running = try prefixProcesses(arena, dir, server_pid);
+    if (server_pid != null or running.len > 0) {
+        try w.print("The prefix {s} is running: ", .{name});
+        if (server_pid) |pid| {
+            try w.print("a wineserver as pid {d}", .{pid});
+            if (running.len > 0) try w.print(", serving {d} process{s}", .{
+                running.len,
+                if (running.len == 1) "" else "es",
+            });
+        } else {
+            try w.print("{d} process{s} left over from a wineserver that is already gone", .{
+                running.len,
+                if (running.len == 1) "" else "es",
+            });
+        }
+        try w.print(".\n\nStop it first:\n\n  protium prefix stop {s}\n\nNothing was deleted.\n", .{name});
+        return 1;
+    }
+
+    const m = measureTree(arena, io, dir) catch |err| {
+        try w.print("protium prefix remove: cannot look through {s} — {s}\n", .{ dir, @errorName(err) });
+        try w.writeAll("Nothing was deleted.\n");
+        return 1;
+    };
+    var what_buf: [256]u8 = undefined;
+    const what = std.fmt.bufPrint(&what_buf, "the prefix {s}", .{name}) catch "the prefix";
+    if (try describeTree(w, what, dir, m) != 0) return 1;
+
+    if (!opts.force) {
+        var question: [256]u8 = undefined;
+        const prompt = std.fmt.bufPrint(&question, "Delete the prefix {s}?", .{name}) catch "Delete it?";
+        if (!try confirm(io, w, prompt)) {
+            try w.writeAll("Nothing was deleted.\n");
+            return 1;
+        }
+    }
+
+    removeTree(io, dir) catch |err| {
+        try w.print("\nprotium prefix remove: {s} — {s}\n", .{ dir, @errorName(err) });
+        try w.writeAll("Part of the prefix may be gone. Run the command again to finish it.\n");
+        return 1;
+    };
+
+    var size_buf: [64]u8 = undefined;
+    try w.print("\nDeleted {s}, freeing {s}.\n", .{ dir, fetch.size(&size_buf, m.bytes) });
+
+    // A default naming a prefix that is no longer there is not an error any
+    // command can explain: it reports "no prefix named X" and points at
+    // something the user deliberately deleted.
+    if (removal.clearsDefault(env.lookup(sess.defaults, "prefix"), name)) {
+        try writeDefaults(sess, env.lookup(sess.defaults, "runtime"), null);
+        try w.print("It was the default prefix, so `prefix` is now unset in {s}/{s}.\n", .{
+            sess.root, layout.defaults_file,
+        });
+        const left = try sess.installed(layout.prefixes);
+        if (left.len == 1) {
+            try w.print("{s} is the only prefix left, so it is the default.\n", .{left[0]});
+        } else if (left.len > 1) {
+            try w.writeAll("Choose the next one with: protium use <name>\n");
+        }
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Removing a tree, and saying what is in it first
+
+/// What a tree holds, gathered before anything is deleted so that the
+/// confirmation describes what is actually about to go.
+const Measure = struct {
+    bytes: u64 = 0,
+    files: usize = 0,
+    dirs: usize = 0,
+    links: usize = 0,
+    /// Symlinks whose target is outside the tree, as `path -> target`. These
+    /// are the ones worth naming: their targets survive the removal, and
+    /// somebody who made one wants to be told it is being unlinked.
+    outward: std.ArrayList([]const u8) = .empty,
+    /// How many more of those there were than were kept.
+    outward_more: usize = 0,
+    /// Entries that could not be stat'ed or opened. Reported rather than
+    /// counted as nothing: a size that quietly omits part of a tree is worse
+    /// than no size at all.
+    unreadable: usize = 0,
+    /// Directories deeper than `removal.max_depth`. One of these refuses the
+    /// whole removal, which is why it is found by measuring rather than
+    /// half-way through deleting.
+    too_deep: usize = 0,
+};
+
+/// macOS caps a single path component at 255 bytes. The walk copies each name
+/// out of the iterator's buffer before it recurses, because that buffer is
+/// reused, and this is how big the copy has to be.
+const max_name = 255;
+
+/// At most this many outward-pointing symlinks are listed by name.
+const outward_shown = 8;
+
+fn measureTree(arena: std.mem.Allocator, io: Io, path: []const u8) !Measure {
+    var m: Measure = .{};
+    var dir = try Io.Dir.cwd().openDir(io, path, .{ .iterate = true, .follow_symlinks = false });
+    defer dir.close(io);
+    m.dirs += 1;
+    try measureInto(arena, io, dir, path, path, &m, 0);
+    return m;
+}
+
+/// The entry kind comes from `statFile` rather than from the directory
+/// listing, and the stat does not follow links — the size counted for a
+/// symlink is the link's own, never the size of what it points at. A prefix
+/// holding a link to a 66 GB game install measures as the prefix.
+fn measureInto(
+    arena: std.mem.Allocator,
+    io: Io,
+    dir: Io.Dir,
+    dir_path: []const u8,
+    tree: []const u8,
+    m: *Measure,
+    depth: usize,
+) !void {
+    var it = dir.iterate();
+    while (try it.next(io)) |entry| {
+        var name_buf: [max_name]u8 = undefined;
+        if (entry.name.len > name_buf.len) {
+            m.unreadable += 1;
+            continue;
+        }
+        const name = name_buf[0..entry.name.len];
+        @memcpy(name, entry.name);
+
+        const st = dir.statFile(io, name, .{ .follow_symlinks = false }) catch {
+            m.unreadable += 1;
+            continue;
+        };
+        switch (removal.actionFor(st.kind)) {
+            .descend => {
+                if (depth + 1 >= removal.max_depth) {
+                    m.too_deep += 1;
+                    continue;
+                }
+                var sub = dir.openDir(io, name, .{ .iterate = true, .follow_symlinks = false }) catch {
+                    m.unreadable += 1;
+                    continue;
+                };
+                defer sub.close(io);
+                m.dirs += 1;
+                const sub_path = try std.fs.path.join(arena, &.{ dir_path, name });
+                try measureInto(arena, io, sub, sub_path, tree, m, depth + 1);
+            },
+            .unlink, .inspect => {
+                m.bytes += st.size;
+                if (st.kind == .sym_link) {
+                    m.links += 1;
+                    try noteOutward(arena, io, dir, name, dir_path, tree, m);
+                } else {
+                    m.files += 1;
+                }
+            },
+        }
+    }
+}
+
+fn noteOutward(
+    arena: std.mem.Allocator,
+    io: Io,
+    dir: Io.Dir,
+    name: []const u8,
+    dir_path: []const u8,
+    tree: []const u8,
+    m: *Measure,
+) !void {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = dir.readLink(io, name, &buf) catch return;
+    const target = buf[0..n];
+    if (!try removal.pointsOutOf(arena, tree, dir_path, target)) return;
+    if (m.outward.items.len >= outward_shown) {
+        m.outward_more += 1;
+        return;
+    }
+    try m.outward.append(arena, try std.fmt.allocPrint(arena, "{s}/{s} -> {s}", .{ dir_path, name, target }));
+}
+
+/// Print what is about to be deleted. Non-zero when the tree is one this
+/// cannot safely remove, in which case nothing should be.
+fn describeTree(w: *Io.Writer, what: []const u8, dir: []const u8, m: Measure) !u8 {
+    var size_buf: [64]u8 = undefined;
+    try w.print("This deletes {s}:\n\n", .{what});
+    try w.print("  {s}\n", .{dir});
+    try w.print("  {s}\n", .{fetch.size(&size_buf, m.bytes)});
+    try w.print("  {d} file{s} in {d} director{s}\n", .{
+        m.files,
+        if (m.files == 1) "" else "s",
+        m.dirs,
+        if (m.dirs == 1) "y" else "ies",
+    });
+    if (m.links > 0) {
+        try w.print("  {d} symlink{s}, unlinked but never followed\n", .{
+            m.links,
+            if (m.links == 1) "" else "s",
+        });
+    }
+    if (m.unreadable > 0) {
+        try w.print("  {d} entr{s} could not be read, and are not in that size\n", .{
+            m.unreadable,
+            if (m.unreadable == 1) "y" else "ies",
+        });
+    }
+
+    if (m.outward.items.len > 0) {
+        const total = m.outward.items.len + m.outward_more;
+        try w.print("\n{d} of those link{s} out of {s}. What they point at is left\n", .{
+            total,
+            if (total == 1) "s" else "",
+            what,
+        });
+        try w.writeAll("exactly as it is — only the link goes:\n\n");
+        for (m.outward.items) |line| try w.print("  {s}\n", .{line});
+        if (m.outward_more > 0) try w.print("  … and {d} more\n", .{m.outward_more});
+    }
+    try w.writeAll("\n");
+
+    if (m.too_deep > 0) {
+        try w.print("{d} director{s} nested more than {d} deep, which this will not walk.\n", .{
+            m.too_deep,
+            if (m.too_deep == 1) "y is" else "ies are",
+            removal.max_depth,
+        });
+        try w.writeAll("Nothing was deleted; remove it by hand.\n");
+        return 1;
+    }
+    return 0;
+}
+
+/// Ask before deleting.
+///
+/// Only `--force` skips this. A pipe with nothing behind it is refused rather
+/// than answered, because the alternative — reading end-of-input as `no` — is
+/// indistinguishable from a script that meant to say `yes` and forgot the
+/// flag, and one of those two readings deletes a prefix.
+fn confirm(io: Io, w: *Io.Writer, prompt: []const u8) !bool {
+    const in = Io.File.stdin();
+    if (!(in.isTty(io) catch false)) {
+        try w.writeAll("Standard input is not a terminal, so there is nobody to ask.\n");
+        try w.writeAll("Pass --force to delete without the question.\n");
+        return false;
+    }
+
+    try w.print("{s} [y/N] ", .{prompt});
+    try w.flush();
+
+    var buf: [64]u8 = undefined;
+    var reader = in.readerStreaming(io, &buf);
+    const line = reader.interface.takeDelimiterExclusive('\n') catch {
+        try w.writeAll("\n");
+        return false;
+    };
+    const answer = std.mem.trim(u8, line, " \t\r");
+    return std.mem.eql(u8, answer, "y") or std.mem.eql(u8, answer, "yes");
+}
+
+/// Delete `path` and everything below it.
+///
+/// Written here rather than handed to `std.Io.Dir.deleteTree` so that the
+/// rule in `removal.actionFor` is the rule that runs: a symlink is unlinked
+/// and never opened, at every level, including the top one.
+fn removeTree(io: Io, path: []const u8) !void {
+    const parent = std.fs.path.dirname(path) orelse return error.NotDir;
+    const base = std.fs.path.basename(path);
+    var dir = try Io.Dir.cwd().openDir(io, parent, .{});
+    defer dir.close(io);
+    try removeEntry(io, dir, base, 0);
+}
+
+/// Spelled out rather than inferred: `removeEntry` and `removeDir` call each
+/// other, and Zig cannot infer an error set through that.
+const RemoveError = Io.Dir.StatFileError ||
+    Io.Dir.OpenError ||
+    Io.Dir.Iterator.Error ||
+    Io.Dir.DeleteFileError ||
+    Io.Dir.DeleteDirError ||
+    error{ TooDeep, NameTooLong };
+
+fn removeEntry(io: Io, dir: Io.Dir, name: []const u8, depth: usize) RemoveError!void {
+    const st = try dir.statFile(io, name, .{ .follow_symlinks = false });
+    switch (removal.actionFor(st.kind)) {
+        .descend => try removeDir(io, dir, name, depth),
+        // `.inspect` reaches here only when a stat that already looked at the
+        // entry still reported no kind. Unlinking is the recoverable guess:
+        // against a directory it fails with `IsDir` and is retried as one,
+        // where opening a symlink as a directory would not fail at all.
+        .unlink, .inspect => dir.deleteFile(io, name) catch |err| switch (err) {
+            error.IsDir => try removeDir(io, dir, name, depth),
+            else => |e| return e,
+        },
+    }
+}
+
+fn removeDir(io: Io, dir: Io.Dir, name: []const u8, depth: usize) RemoveError!void {
+    if (depth + 1 >= removal.max_depth) return error.TooDeep;
+
+    // Entries are unlinked while the directory is being read, and a
+    // filesystem is allowed to skip entries when that happens. Emptying a
+    // directory is therefore a pass rather than a single sweep: repeat until
+    // `deleteDir` accepts it, with a cap so that a directory something else
+    // is writing into fails rather than spinning.
+    var pass: usize = 0;
+    while (pass < empty_passes) : (pass += 1) {
+        {
+            var sub = try dir.openDir(io, name, .{ .iterate = true, .follow_symlinks = false });
+            defer sub.close(io);
+            var it = sub.iterate();
+            while (try it.next(io)) |entry| {
+                var name_buf: [max_name]u8 = undefined;
+                if (entry.name.len > name_buf.len) return error.NameTooLong;
+                const child = name_buf[0..entry.name.len];
+                @memcpy(child, entry.name);
+                try removeEntry(io, sub, child, depth + 1);
+            }
+        }
+        dir.deleteDir(io, name) catch |err| switch (err) {
+            error.DirNotEmpty => continue,
+            else => |e| return e,
+        };
+        return;
+    }
+    return error.DirNotEmpty;
+}
+
+/// How many times a directory is emptied before the removal gives up on it.
+const empty_passes = 64;
+
 // ---------------------------------------------------------------------------
 // run
 
@@ -1096,6 +1511,7 @@ fn runInstall(
         try installList(w);
         return 0;
     }
+    if (std.mem.eql(u8, name, "clean")) return installClean(arena, io, vars, opts, w);
 
     const app = catalog.find(name) orelse {
         try w.print("protium install: nothing named `{s}` in the catalogue.\n\n", .{name});
@@ -1396,6 +1812,66 @@ fn installList(w: *Io.Writer) !void {
         \\from its publisher at the moment you ask for it.
         \\
     );
+}
+
+/// Delete `<root>/downloads`, which holds the installers `protium install`
+/// fetched.
+///
+/// The whole directory goes, rather than named entries in it: it holds the
+/// publishers' own files under the names the catalogue gives them, one copy
+/// serving every prefix, and nothing in it that cannot be fetched again. The
+/// next `protium install` recreates it and downloads what it needs.
+///
+/// It is described and confirmed like a prefix removal, and it uses the same
+/// walk, so a symlink somebody put in there is unlinked rather than followed.
+fn installClean(
+    arena: std.mem.Allocator,
+    io: Io,
+    vars: *std.process.Environ.Map,
+    opts: Options,
+    w: *Io.Writer,
+) !u8 {
+    const sess = session.Session.open(arena, io, vars) catch |err| switch (err) {
+        error.NoHome => {
+            try w.writeAll("protium: no HOME, and no PROTIUM_HOME to use instead\n");
+            return 1;
+        },
+        else => |e| return e,
+    };
+
+    const dir = try removal.downloadsPath(arena, sess.root);
+    if (!sess.exists(dir)) {
+        try w.print("Nothing has been downloaded: {s} does not exist.\n", .{dir});
+        return 0;
+    }
+
+    const m = measureTree(arena, io, dir) catch |err| {
+        try w.print("protium install clean: cannot look through {s} — {s}\n", .{ dir, @errorName(err) });
+        try w.writeAll("Nothing was deleted.\n");
+        return 1;
+    };
+    if (m.files == 0 and m.links == 0 and m.dirs == 1) {
+        try w.print("Nothing to clean: {s} is empty.\n", .{dir});
+        return 0;
+    }
+    if (try describeTree(w, "the downloads directory", dir, m) != 0) return 1;
+    try w.writeAll("Every installer in it is the publisher's own, and `protium install`\n");
+    try w.writeAll("downloads what it needs again.\n\n");
+
+    if (!opts.force and !try confirm(io, w, "Delete the downloaded installers?")) {
+        try w.writeAll("Nothing was deleted.\n");
+        return 1;
+    }
+
+    removeTree(io, dir) catch |err| {
+        try w.print("\nprotium install clean: {s} — {s}\n", .{ dir, @errorName(err) });
+        try w.writeAll("Part of it may be gone. Run the command again to finish it.\n");
+        return 1;
+    };
+
+    var size_buf: [64]u8 = undefined;
+    try w.print("\nDeleted {s}, freeing {s}.\n", .{ dir, fetch.size(&size_buf, m.bytes) });
+    return 0;
 }
 
 /// How to start what was just installed, with the reason for every argument

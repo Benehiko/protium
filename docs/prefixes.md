@@ -238,6 +238,138 @@ carries `WINEPREFIX`, and macOS will hand back a process's environment for the
 asking. A process whose environment cannot be read is left out rather than
 guessed at, because the list is about to be signalled.
 
+## Removing a prefix
+
+```
+$ protium prefix remove skyrim
+$ protium prefix remove skyrim --force     # in a script: skip the question
+```
+
+It prints what is about to go, and then asks:
+
+```
+$ protium prefix remove eldenring
+This deletes the prefix eldenring:
+
+  /Users/me/.local/share/protium/prefixes/eldenring
+  4.1 GB (4402341888 bytes)
+  38104 files in 4127 directories
+  6 symlinks, unlinked but never followed
+
+1 of those links out of the prefix eldenring. What they point at is left
+exactly as it is — only the link goes:
+
+  …/eldenring/drive_c/Program Files (x86)/Steam/steamapps -> /Users/me/Library/Application Support/CrossOver/Bottles/Steam/drive_c/Steam/steamapps
+
+Delete the prefix eldenring? [y/N]
+```
+
+`--force` skips that question and nothing else. It is spelled the same way as
+everywhere else in the CLI, and like `protium install --force` it does not
+widen what the command is willing to do — it only stops it asking.
+
+### A symlink is unlinked, never followed
+
+This is the rule the command rests on, and it is why the removal is protium's
+own walk rather than an `rm -rf`.
+
+A prefix can hold a link that points out of it, and that is not hypothetical.
+The line above is a real one:
+
+```
+$ ls -l "~/.local/share/protium/prefixes/eldenring/drive_c/Program Files (x86)/Steam/steamapps"
+lrwxr-xr-x  steamapps -> /Users/me/Library/Application Support/CrossOver/Bottles/Steam/drive_c/Steam/steamapps
+```
+
+It is how one 66 GB game install is shared between a protium prefix and a
+CrossOver bottle instead of being downloaded twice. Walking through it would
+delete software protium did not put there, cannot put back, and would take
+most of an evening to fetch again — and it would do so while having reported
+the prefix's size as something far smaller than what was actually about to go.
+
+So every entry is examined with a stat that does not follow links:
+
+* a **directory** is emptied and then removed;
+* **everything else, a symlink included**, is unlinked where it stands. The
+  link goes; whatever it points at is not opened, not measured and not
+  touched.
+
+The same rule governs the size: a symlink counts as its own few bytes, never
+as the size of its target. A prefix holding a link to 66 GB measures as the
+prefix.
+
+Links that lead out of the prefix are listed by name before the question, up
+to eight of them, so "only the link goes" is something you can check rather
+than a promise you have to take. Whether a link leads out is worked out from
+the paths alone, without opening anything — which can name one link too many
+if its path runs through another symlink, and never one too few.
+
+### What it refuses
+
+| | |
+| --- | --- |
+| A name that is not a plain identifier | the same `layout.checkName` rule that decided whether the prefix could be created: letters, digits, `-`, `_` and `.`. `..`, `a/b` and `$(…)` are refused there, and the resulting path is then checked to be a direct child of `<root>/prefixes` rather than trusted to be one |
+| A prefix with Wine running in it | a live `wineserver` holds the prefix open, and deleting underneath it leaves a half-removed tree with a process still writing into it |
+| A tree nested more than 128 directories deep | the walk recurses, and this bounds it. It is found by measuring, before anything is deleted, so such a tree is refused whole rather than left half-removed |
+
+A running prefix is **refused, not stopped**. The two are separate commands on
+purpose: stopping means signalling processes, and one command that both
+signals and deletes is one whose failure modes cannot be reasoned about from
+its name. `protium prefix remove` names the line to run instead, and `--force`
+does not change this:
+
+```
+$ protium prefix remove eldenring
+The prefix eldenring is running: a wineserver as pid 41233, serving 6 processes.
+
+Stop it first:
+
+  protium prefix stop eldenring
+
+Nothing was deleted.
+```
+
+It looks for both halves, exactly as `protium prefix stop` does — the
+wineserver by the lock it holds, and the processes it was serving by their
+`WINEPREFIX` — so a session whose wineserver has already died is still seen.
+
+### The default, afterwards
+
+`<root>/defaults` records a *name*, not a path, so a default left pointing at
+a prefix that no longer exists does not dangle in any way protium can notice
+later: every command that resolves it fails with "no prefix named X" and
+points at something you deliberately deleted. Removing the default prefix
+therefore clears the `prefix=` key:
+
+```
+It was the default prefix, so `prefix` is now unset in /Users/me/.local/share/protium/defaults.
+skyrim is the only prefix left, so it is the default.
+```
+
+With one prefix remaining that is the end of it — rule 4 above picks it up
+with nothing recorded. With several, `protium use <name>` chooses the next.
+
+The `runtime=` key is untouched: a runtime is not a prefix, and removing one
+prefix says nothing about which Wine to use.
+
+## Removing the downloads
+
+`protium install` keeps the installers it fetched in `<root>/downloads`,
+beside the prefixes rather than inside one, because the same `SteamSetup.exe`
+serves every prefix.
+
+```
+$ protium install clean
+$ protium install clean --force
+```
+
+The whole directory goes, rather than named entries in it. It holds the
+publishers' own files under the names the catalogue gives them and nothing
+that cannot be fetched again — the next `protium install` recreates it and
+downloads what it needs. It is described and confirmed exactly like a prefix
+removal, and it uses the same walk, so anything linked into it is unlinked
+rather than followed.
+
 ## Do not point two different Wines at one prefix
 
 Wine decides whether a prefix needs updating by comparing

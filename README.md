@@ -175,7 +175,10 @@ protium run "C:\Program Files\…\Game.exe"
 protium prefix list                    # your prefixes; * is the default
 protium prefix new skyrim              # another one
 protium prefix stop                    # shut down the Wine running in one
+protium prefix remove skyrim           # delete one, after showing what goes
 protium use skyrim                     # make it the default
+
+protium install clean                  # delete the installers it downloaded
 ```
 
 A *prefix* is one Windows installation — its own `C:` drive, registry and
@@ -184,6 +187,12 @@ programs. Games that disagree about what they need get one each.
 Each prefix keeps its settings in a `protium.conf` inside it — frame cap, ray
 tracing, Wine's own knobs — applied automatically to anything launched there.
 Full details in **[docs/prefixes.md](docs/prefixes.md)**.
+
+`protium prefix remove` prints the path, the size and the symlinks that lead
+out of the prefix, then asks. It never follows one of those links: a prefix
+can hold a link into somebody else's Steam library, and only the link goes.
+`--force` answers the question and nothing more — a prefix with Wine running
+in it is refused either way, with the `prefix stop` line to run first.
 
 ## How it works
 

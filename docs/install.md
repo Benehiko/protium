@@ -70,6 +70,28 @@ entry carries evidence.
 11. **Prints how to launch it**, including every argument it needs *here* and
     the reason for each one.
 
+## Reclaiming the downloads
+
+Step 5 leaves the installers in `<root>/downloads`, and they are kept on
+purpose: the same `SteamSetup.exe` serves every prefix, and a reused download
+is the difference between configuring a second prefix in seconds and fetching
+the file again.
+
+When that space is wanted back:
+
+```
+$ protium install clean
+$ protium install clean --force     # in a script: skip the question
+```
+
+The whole directory goes. Nothing in it is protium's — each file is the
+publisher's own, fetched at the moment it was asked for — and nothing in it
+cannot be fetched again, which is what makes deleting it safe to offer as a
+command. The next `protium install` recreates the directory and downloads what
+it needs. It prints the size and asks first, the same way
+[`protium prefix remove`](prefixes.md#removing-a-prefix) does, and it uses the
+same walk: a symlink inside it is unlinked, never followed.
+
 ## Fixes: when protium replaces one of a program's files
 
 Some software will not work here without a file of its own being replaced.
