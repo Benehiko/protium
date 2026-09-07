@@ -28,6 +28,12 @@ online** in a client that signed in offline is the same failure — see [What
 `Schedule init returned 22` actually
 is](#what-schedule-init-returned-22-actually-is).
 
+It is not a networking fault at all. Every connection attempt is gated on a
+thread named `MachineIDInfoThread`, which never finishes: it re-asks the
+wineserver for the first entry of `\DosDevices` several hundred thousand times
+a second and never advances past it. Measured on a running client — see
+[Confirmed at runtime](#confirmed-at-runtime-the-thread-is-machineidinfothread).
+
 ## The failure, stated precisely
 
 Steam's connection manager logs its sign-in decisions to
@@ -401,25 +407,193 @@ logged second, so the 60-second wait is not being hit — the thread is created
 and `Start` returns promptly, and the failure is downstream of that: the
 worker's body never reaches the store at `0x138985819`.
 
-This has not yet been confirmed at runtime. `+0x1090` holding `10` is an
-inference from which branch is taken, not a read of live memory.
+~~This has not yet been confirmed at runtime.~~ It has — see the next section.
+`+0x1090` holding `10` was an inference from which branch is taken; it is now
+a read of live memory.
+
+## Confirmed at runtime: the thread is `MachineIDInfoThread`
+
+*Measured 2026-09-07 against the same client build 1788652215, Wine 11.0 from
+`crossover-sources-26.3.0`, D3DMetal 4.0b2, on the same M4 host. Every number
+below came off a running client, not out of a disassembler.*
+
+The inference above is confirmed, and the thread it blamed now has a name.
+
+### Taking the measurement
+
+`winedbg` can read the client's memory while it loops. It is a PE module in the
+runtime — `lib/wine/x86_64-windows/winedbg.exe` — so it needs no build of its
+own:
+
+```sh
+protium run winedbg --command "info process"            # Wine pids; steam.exe is one
+protium run winedbg --command "info share" <pid>        # steamclient64 load address
+protium run winedbg --command "p *(long long*)<addr>" <pid>
+```
+
+Three practical notes, each of which cost a detour:
+
+* **Addresses move.** `steamclient64` loaded at `0x6fffe5e70000`,
+  `0x6fffe5ea0000` and `0x6fffe5fc0000` on three consecutive launches. Take the
+  base from `info share` every time and add the RVA — the document's
+  `0x1397eb9b8` is `RVA 0x17eb9b8` against the preferred base `0x138000000`.
+* **One command per invocation.** `--command "a; b"` is a syntax error, not two
+  commands.
+* **Attaching is safe.** `--command` attaches, runs, and quits without killing
+  the client; this was checked against a throwaway process rather than assumed.
+  `bt all`, on the other hand, dies with `Exception c0000005` partway down the
+  thread list, so back-trace threads individually.
+
+`sample(1)` remains useless against the client's own threads — the x86-64 side
+runs under Rosetta and every stack unwinds to repeated
+`__wine_syscall_dispatcher (in ntdll.so)`. It is *not* useless against the
+**wineserver**, which is a native binary and symbolises properly. That is how
+the spin below was localised:
+
+```
+791 thread_poll_event  (in wineserver) + 87
+  289 call_req_handler + 276
+  199 read_request + 156
+  103 call_req_handler + 129
+   41 req_get_directory_entries  (in wineserver) + 291
+     40 set_reply_data_size + 37
+       31 mem_alloc + 14
+```
+
+### What the reads say
+
+```
+g_jobmgr            = *(void**)(base + 0x17eb9b8)
+jobmgr->0x1090      = 0xa          <- the sentinel 10, exactly as inferred
+```
+
+`0xa` on three separate launches, so the gate is closed for the life of every
+one of them.
+
+The `CThread` the gate starts sits at `jobmgr+0x1098`, and it names itself:
+
+```
++0x00  0x6fffe71a9bd0        vtable
++0x08  0x378                 m_hThread
++0x10  0xffffffff00000294    thread id 0x294 in the low half
++0x18  "MachineI" "DInfoThr" "ead"
+```
+
+`MachineIDInfoThread`, and tid `0x294` appears in `info threads` under that
+name. **Steam gates every connection attempt on computing a machine ID.** The
+whole sign-in path is waiting on that, which is why every network-layer test in
+this document passed: they were measuring the wrong layer.
+
+### The thread is not blocked — it is spinning
+
+Six back-traces over 45 seconds all showed the same two frames:
+
+```
+=>0 0x006fffffd768d4 in ntdll (+0x568d4)      <- NtQueryDirectoryObject+0x14
+  1 0x006fffff742183 GetLogicalDrives+0x103
+```
+
+Both attributions were checked against export tables rather than trusted.
+`ntdll` RVA `0x568c0` is `NtQueryDirectoryObject`, so `+0x568d4` is inside its
+syscall thunk. `kernelbase` has `GetLogicalDrives` at RVA `0x72080` and the next
+export at `0x721c0`, so `+0x103` falls inside that function.
+
+A stack that never moves reads as a deadlock. It is the opposite:
+
+```
+steam.exe    0.3 %
+wineserver  51.3 %   (3:06 of CPU time)
+```
+
+`WINEDEBUG=+server` says what the server is doing with that core — 5.8 million
+matching lines in the first minute, 8.1 GB of trace before it was stopped:
+
+```
+0180: get_directory_entries( handle=0608, index=00000000, max_count=00000001 )
+0180: get_directory_entries() = 0 { total_len=170, count=00000001, entries={{
+      name=L"HID#VID_845E&PID_0001#0&0000&0&0&0#{378de44c-56ef-11d1-bc8c-00a0c91405dd}",
+      type=L"SymbolicLink"}} }
+```
+
+36.7 million requests in about a minute, from exactly two threads — `0180`, and
+`0298`, which `info threads` identifies as `MachineIDInfoThread`. **`index` is
+`00000000` in every one of them.** The enumeration restarts from the beginning,
+forever, and the wineserver — which is single-threaded — burns a core answering.
+
+So the client is not waiting on the network, and not waiting on a lock. It is
+re-asking for the first entry of `\DosDevices` several hundred thousand times a
+second.
+
+### What the object directory actually holds
+
+A 60-line PE that opens `\DosDevices` and walks it with `NtQueryDirectoryObject`
+(source under `docs/` is not kept; it is thirty lines of `NtOpenDirectoryObject`
+plus a loop) reports the enumeration as **healthy** when given a real buffer —
+the cursor advances `0 → 1 → 2 …` and lists the whole directory. Two things
+about that listing matter:
+
+```
+iter  0: name_len=146  HID#VID_845E&PID_0001#…#{378de44c-56ef-11d1-bc8c-00a0c91405dd}
+iter 33: name_len=4    C:
+```
+
+The first entry is 146 bytes long, and `C:` is thirty-three entries behind it.
+Re-running the same walk with a 40-byte buffer — the size a caller expecting
+names like `"C:"` would pick — fails on the **first** call:
+
+```
+--- buffer = 40 bytes ---
+  iter 0: status 0xc0000023 (enumeration ended)     <- STATUS_BUFFER_TOO_SMALL
+```
+
+A caller that treats that as "the directory is empty" sees a machine with no
+drives at all, and something that needs a drive would retry. That is the shape
+of the observed request pattern.
+
+### Ruled out
+
+* **The dangling `D:`.** The prefix maps `d: -> /Volumes/Game Porting Toolkit`
+  and `d:: -> /dev/rdisk4s2`, both gone since the DMG was ejected. It makes no
+  difference: a standalone `GetLogicalDrives` returns `0x200000c` (C, D, Z)
+  instantly, with Steam stopped *and* while Steam is spinning, and per-drive
+  `GetVolumeInformation` answers for all three including the dead `D:`.
+* **The HID device.** The obvious reading of the trace is that the 146-byte HID
+  name at index 0 is what pushes the caller over. It is not sufficient:
+  launching with `WINEDLLOVERRIDES="winebus.sys=d"` removes every `HID#…` entry
+  from `\DosDevices` — confirmed by re-running the walk — and the client loops
+  exactly as before, with `jobmgr->0x1090` still `0xa`. Removing HID only
+  changes *which* long name is first: index 0 becomes a 76-byte
+  `{00000017-0000-0000-0000-4E6574446576}`, one of Wine's per-adapter network
+  device links (`4E6574446576` is `"NetDev"`), and this host has 28 adapters.
+
+### Still unknown
+
+Why the caller restarts at `index=0` instead of advancing. Two readings fit
+every measurement above, and they have different fixes:
+
+1. An outer loop that re-enumerates from scratch on each pass, never finding
+   what it wants — consistent with `max_count=1` and a caller that gives up on
+   the first long name.
+2. An inner loop whose cursor is not carried between calls.
+
+Telling them apart needs the frame above `GetLogicalDrives`, which `winedbg`
+cannot currently produce (the unwinder faults one frame further up), or Wine's
+sources for `GetLogicalDrives` and `NtQueryDirectoryObject` — which the build
+recipe deletes with its scratch directory.
 
 ## Where to look next
 
-Read `jobmgr->0x1090` in the running client and confirm it is `10`. The job
-manager pointer is the global at VA `0x1397eb9b8`; with the module base of
-`steamclient64.dll` from `/proc`-equivalent output or a Wine debugger, that is a
-two-word read.
+Get the caller. `winedbg`'s unwinder faults immediately above
+`GetLogicalDrives`, so the frame that matters is the one frame it will not
+produce. Keeping the Wine source tree from the build (rather than deleting the
+scratch directory) would also settle reading 1 versus reading 2 by inspection.
 
-`sample(1)` is not the tool for this. The client's threads are named and the
-names are useful — `CJobMgr::m_WorkThreadPool:0`, `IPC:CSteamEngine`,
-`SteamEngineWatchdogThread` and about forty others show up — but every stack
-unwinds to nothing but repeated `__wine_syscall_dispatcher (in ntdll.so)`,
-because the x86-64 side runs under Rosetta and `sample` cannot walk it. Use
-Wine's own debugger, or `WINEDEBUG=+thread`, and compare the thread the gate
-starts against the CrossOver control.
+Then compare against the CrossOver control, which signs in on the same host and
+the same prefix: does its `MachineIDInfoThread` complete, and does its
+`\DosDevices` enumeration look different?
 
 The other open question is whether this is the same underlying Wine fault as
 the CEF one in [`steam-rendering.md`](steam-rendering.md). Both are "a thread
 or process starts, and the thing it is supposed to hand back never arrives",
 and neither has been traced to a call yet. They may be one bug.
+
