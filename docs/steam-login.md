@@ -164,11 +164,12 @@ Steam. Launching `eldenring.exe` instead of `start_protected_game.exe` also
 bypasses Easy Anti-Cheat, which is what mod loaders need anyway:
 
 ```sh
-export WINEPREFIX=~/.local/share/protium/prefixes/eldenring
+root="${PROTIUM_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/protium}"
+export WINEPREFIX="$root/prefixes/eldenring"
 export WINEMSYNC=1
 export SteamAppId=1245620
 cd ".../steamapps/common/ELDEN RING/Game"
-~/.local/share/protium/wine-11.0-cx26.3/bin/wine eldenring.exe
+"$root/runtimes/wine-11.0-cx26.3/bin/wine" eldenring.exe
 ```
 
 `SteamAppId` is what `SteamAPI_Init` reads when there is no `steam_appid.txt`

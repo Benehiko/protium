@@ -161,12 +161,16 @@ destination.
 ## Installing it somewhere durable
 
 ```sh
-make install prefix="$HOME/.local/share/protium/runtimes/wine-11.0-cx26.3"
+root="${PROTIUM_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/protium}"
+make install prefix="$root/runtimes/wine-11.0-cx26.3"
 ```
 
 Install it under `runtimes/` in protium's root and protium finds it without
-being told; the last path component is the name it will be known by. The root
-is `$PROTIUM_HOME`, else `$XDG_DATA_HOME/protium`, else the path above — see
+being told; the last path component is the name it will be known by. The `root`
+line above is protium's own rule spelled out — `$PROTIUM_HOME`, else
+`$XDG_DATA_HOME/protium`, else `$HOME/.local/share/protium` — so someone who
+keeps the 1.1 GB tree on another disk sets `PROTIUM_HOME` and changes nothing
+else here. `protium status` prints the root it resolved; see
 [`prefixes.md`](prefixes.md).
 
 **The destination must not contain spaces.** Wine's install rules do not quote
