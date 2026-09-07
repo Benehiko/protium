@@ -6,7 +6,11 @@ in from cached credentials. This document records what that failure actually is
 that gets a game running today regardless.
 
 *Recorded 2026-09-05, against Wine 11.0 built from `crossover-sources-26.3.0`
-with D3DMetal 4.0b2, on an M4 Mac running macOS 26.6.1.*
+with D3DMetal 4.0b2, on an M4 Mac running macOS 26.6.1. Re-measured 2026-09-07
+in a prefix rebuilt from nothing, reporting Windows 11 and carrying freshly
+copied credentials: [neither changed the
+outcome](#windows-11-and-fresh-credentials-change-nothing), and the failure
+turns out to be intermittent rather than permanent.*
 
 ## The short version
 
@@ -26,7 +30,9 @@ sufficient](#the-flags-are-necessary-not-sufficient--use--noreactlogin).
 The online path is still broken, and the fault is one call. Clicking **go
 online** in a client that signed in offline is the same failure — see [What
 `Schedule init returned 22` actually
-is](#what-schedule-init-returned-22-actually-is).
+is](#what-schedule-init-returned-22-actually-is). It fails on roughly seven
+starts in eight rather than all of them; the one that got through was stopped
+by Valve rejecting a copied token, not by anything in Wine.
 
 It is not a networking fault at all. Every connection attempt is gated on a
 thread named `MachineIDInfoThread`, which never finishes: it re-asks the
@@ -603,6 +609,242 @@ Telling them apart needs the frame above `GetLogicalDrives`, which `winedbg`
 cannot currently produce (the unwinder faults one frame further up), or Wine's
 sources for `GetLogicalDrives` and `NtQueryDirectoryObject` — which the build
 recipe deletes with its scratch directory.
+
+## Windows 11 and fresh credentials change nothing
+
+*Measured 2026-09-07 in a prefix deleted and rebuilt from nothing for this
+test. Wine 11.0 built from `crossover-sources-26.3.0`; D3DMetal 4.0b2
+(`CFBundleShortVersionString` from
+`lib/external/D3DMetal.framework/Versions/A/Resources/Info.plist`); macOS
+26.6.2, build 25G83, on an M4 Mac. Steam client 1788652215. The prefix reports
+`Microsoft Windows 10.0.22000` — Windows 11 21H2 — where every earlier
+measurement in this document was taken at `10.0.19045`.*
+
+Two things had never been varied: the Windows version the prefix reports, and
+the age of the cached credentials. Both were changed at once, in a prefix with
+no history at all. **Neither made any difference to the fault.** In five of six
+client starts the log line is still
+
+```
+LogOn() called; not connected yet, scheduling connection. Schedule init returned 22
+```
+
+followed by the same `EConnect called - scheduling connection for 50ms from
+now` loop — 784 to 1142 lines per start, at the same eighteen a second.
+
+### What was rebuilt, and how
+
+`protium prefix remove eldenring` reported 2.1 GB (2246234082 bytes), 11509
+files, 13 symlinks of which 12 led out of the prefix, and unlinked them without
+following them; the 66 GB Elden Ring install in the CrossOver bottle and both
+`ermod` directories were still there afterwards. `protium prefix new eldenring`
+then made a prefix whose `syswow64` was populated on its own — see
+[`syswow64` fills itself now](install.md#syswow64-fills-itself-now), which is a
+correction to a claim this repository was making.
+
+The Windows version was set with Wine's own tool, `winecfg /v win11`. It
+changes five values, in both the 64-bit and the `Wow6432Node` view of
+`Software\Microsoft\Windows NT\CurrentVersion`:
+
+| Value | Before | After |
+| --- | --- | --- |
+| `CurrentBuild`, `CurrentBuildNumber` | `19045` | `22000` |
+| `ProductName` | `Windows 10 Pro` | `Microsoft Windows 11` |
+| `UBR` | `0x16a4` | `0x24c` |
+| `CSDVersion` | absent | `""` |
+
+and leaves `CurrentVersion` (`6.3`), `CurrentMajorVersionNumber` (10) and
+`CurrentMinorVersionNumber` (0) alone. `cmd /c ver` then answers `Microsoft
+Windows 10.0.22000` from both `system32` and `syswow64`.
+
+**`winver` is not a check on this.** Wine's `winver.exe` draws "Wine 11.0 /
+Running on wine-11.0" and never mentions the Windows version it is reporting to
+programs, so it can neither confirm nor deny the change. `cmd /c ver` is the
+one to use.
+
+### (a) Is it still 22? Yes — but it is a race, not a wall
+
+This document has said the loop is permanent, on the reasoning that `EConnect`'s
+initialiser is guarded by `+0x1090 == 0` and so `CThread::Start` runs exactly
+once per process. That reasoning is unchanged and still fits. What is new is
+that the *worker* is not guaranteed to lose:
+
+| Start | Login path | `Schedule init returned` | `EConnect` lines |
+| --- | --- | --- | --- |
+| 1 | CEF | **1** | 0 |
+| 2 | CEF | 22 | 1788 |
+| 3 | CEF | 22 | 1142 |
+| 4–7 | CEF | 22 | 805, 805, 788, 784 |
+| 8 | `-noreactlogin` | 22 | 1052 |
+
+Start 1 is the first time this build has been observed getting past the gate.
+It went the whole way: `CCMInterface::YieldingConnect`, `PingWebSocketCM`
+against fourteen connection managers, `Connect() starting connection
+(eNetQOSLevelHigh, cmp1-fra1.steamserver.net:443, WebSocket)`,
+`ConnectionCompleted()`, `Logging on`. That is the CrossOver route, in this
+Wine, with `Schedule init returned 1`.
+
+It did not reproduce. Seven consecutive starts afterwards — same prefix, same
+files, credentials restored from the bottle before each one so the cached-login
+path was taken every time — all returned 22. So **`MachineIDInfoThread` is a
+race that is almost always lost, not a thread that always hangs.** One start in
+eight is not a workaround, but it does rule out a hard deadlock, and it means
+anything that changes startup timing is worth trying.
+
+`-noreactlogin` makes no difference to this. It is a different login path into
+the same `LogOn()`, and start 8 returned 22 like the rest.
+
+### (b) Does it reach `Logged On`? No — and the reason is not Wine
+
+The one start that connected got an answer from Valve:
+
+```
+[Logging On, 4, 7] [U:1:<account>] Using JWT …, persistence: 1, issued: Fri Aug 21 21:17:50 2026, expiry: Sat Mar 20 00:17:42 2027
+[Logging On, 4, 7] [U:1:<account>] RecvMsgClientLogOnResponse() : [I:0:0] 'Access Denied'
+Clearing in-memory token - 15 (Access Denied): LogonFailureReceived(2)
+[Logged Off, 4, 0] [U:1:<account>] ConnectionDisconnected() not auto reconnecting due to Access Denied
+```
+
+The token was inside its own validity window and the server refused it anyway.
+A Steam refresh token is bound to the client that obtained it, so a copy of the
+CrossOver bottle's token is not usable from a different prefix — which is a
+statement about Valve's authentication, not about Wine. **Reaching `Logged On`
+from this prefix needs a fresh interactive sign-in — account password and Steam
+Guard — typed into the client's own login page.** Nothing in this document
+blocks that any more; only the intermittent gate above stands in front of it.
+
+The rejection has a side effect worth knowing, because it silently changes what
+the next start does. The client rewrites `config/loginusers.vdf`:
+
+| Key | Before | After the rejection |
+| --- | --- | --- |
+| `RememberPassword` | `1` | `0` |
+| `AutoLogin` | `1` | replaced by `AllowAutoLogin` `0` |
+| `MostRecent` | absent | `1` |
+
+`AppData/Local/Steam/local.vdf` is *not* touched — the encrypted token is still
+sitting there. So a second start after a rejection is not testing the same
+thing as the first: auto-login is off, the client sits at
+`SetLoginState: WaitingForCredentials`, and the connection attempt comes from
+the interface (`UI Request: connect`) rather than from cached credentials.
+Restore `loginusers.vdf` between runs or the comparison is not a comparison.
+
+### (c) Does CEF render? Yes — once the stand-in is in the right directory
+
+It does, and the black window seen on start 1 was protium's own bug rather than
+a Wine fault.
+
+**Steam ships two `steamwebhelper.exe`s.** `bin/cef/cef.win64` and
+`bin/cef/cef.win7x64` both exist — in this prefix and in the CrossOver bottle —
+and the client runs one or the other. protium's stand-in
+(`docs/steam-rendering.md`) was only ever installed into `cef.win64`. On start 1
+the client ran `cef.win7x64`, where Valve's own 7697048-byte binary was still
+in place, and the result is exactly the documented unfixed behaviour: six
+`GPU process exited unexpectedly` lines, `Disabling GPU acceleration:
+Disabled/CrashCount`, and a `Sign in to Steam` window that painted solid black.
+
+With the stand-in in both trees, `cef_log.txt` has **zero** GPU lines — the
+signature this document already records for the working case — and the client's
+windows paint.
+
+**What decides which tree is used is not known, and it is not the Windows
+version.** That was the first guess and it is wrong: starts 1 and 3 both ran at
+`10.0.22000` and used different trees. `cef.win7x64` appeared in the prefix
+during start 1, so a client mid-way through fetching it is the likelier
+explanation, but that has not been pinned down. The fix does not depend on
+knowing: `protium install steam` now replaces the binary in **every** CEF tree
+present and skips the ones that are not there yet, because a fix that covers
+one of two interchangeable copies is a fix that works until it does not.
+
+### The credential set, and which part is the credential
+
+Five things were copied out of the CrossOver bottle. Only one of them is a
+secret:
+
+| What | Where | What it carries |
+| --- | --- | --- |
+| `AppData/Local/Steam/local.vdf` | prefix user's AppData | **The credential.** `MachineUserConfigStore/Software/Valve/Steam/ConnectCache` holds the refresh token, DPAPI-encrypted. Wine's `crypt32` stamps the blob `Wine Crypt32 ok` and uses a fixed key, which is why the file is portable between prefixes at all. |
+| `config/config.vdf` | Steam root | `Authentication/RememberedMachineID` — the machine-auth JWT that keeps Steam Guard quiet — and `Accounts/<name>/SteamID`. Not the login credential. |
+| `config/loginusers.vdf` | Steam root | *Who* to sign in as, and the `RememberPassword` / `AutoLogin` / `WantsOfflineMode` / `SkipOfflineModeWarning` flags. No secret at all. |
+| `HKCU\Software\Valve\Steam\AutoLoginUser` | prefix registry | The account name, for the legacy login path. Set with `protium run reg add`, not by copying `user.reg`. |
+| `userdata/<id>/` | Steam root | Per-user settings and cloud cache. Not a credential; copied so the client's first run matches the bottle's. |
+
+A grep for a JWT across the whole Steam tree finds it in `config.vdf` and
+nowhere else, and the only other encrypted blob is `local.vdf`'s. Copying
+`userdata/` or the registry alone signs nobody in.
+
+### Offline mode needs the app cache, which is not a credential either
+
+Offline mode failed at first in the rebuilt prefix, and not for any of the
+reasons above:
+
+```
+[ None ] Start offline - 1
+[ WaitingForLibraryReady ] Timed out waiting for library ready: 15.000000s - offline
+[ WaitingForLibraryReady ] SetLoginState: WaitingForCredentials - Offline App Cache invalid
+```
+
+`Start offline - 1` is reached — the flags are read and honoured — and the
+client then finds it has no idea what the account owns. `appcache/` (161 MB,
+`appinfo.vdf` and `packageinfo.vdf`) and `depotcache/` had gone with the old
+prefix. Copying both from the bottle turns that into
+
+```
+[ None ] Start offline - 1
+[ WaitingForLibraryReady ] SetLoginState: Success - OK
+```
+
+So the sentence elsewhere in this document — "the account must have signed in
+online at least once so that the credentials and the game's licence are cached"
+— is right, and `appcache/` is where the second half of it lives. A prefix
+rebuilt from scratch needs it copied in alongside the credential, or offline
+mode gets as far as `Start offline - 1` and stops.
+
+### Where that leaves the prefix
+
+Signed in offline, and playing. `steam.exe -noreactlogin -noverifyfiles
+-norepairfiles` reaches `SetLoginState: Success`, and Elden Ring launched
+directly against it — `SteamAppId=1245620`, `eldenring.exe` rather than
+`start_protected_game.exe`, exactly as
+[Offline mode](#offline-mode-the-route-that-works) describes — draws its title
+screen at `PRESS ANY BUTTON`, with D3DMetal and the shader converter logging
+the same two harmless complaints as before:
+
+```
+[D3DMetal:LOG:DCE1E][EndQuery_block_invoke:1695] Unsupported: ID3D12GraphicsCommandListMTL::EndQuery - Type = 2
+[metal-shaderconverter] Warning: Unsupported: culldistance
+```
+
+**Elden Ring has a 52 GB update pending, and it was not applied.** The bottle's
+`appmanifest_1245620.acf` had `AutoUpdateBehavior 0` — "always keep this game
+updated" — with `buildid 22984413` against `TargetBuildID 23850278`, 560 MB to
+download and 52 GB to stage, and 38 MB of deltas already in
+`steamapps/downloading`. Since the prefix's `steamapps` is a symlink into that
+bottle, an online client would have started rewriting an install CrossOver also
+uses. Before the client was allowed online, `AutoUpdateBehavior` was set to `1`
+("only update this game when I launch it") and `steamapps/downloading`,
+`steamapps/temp` and `steamapps/common/ELDEN RING` were made unwritable, which
+was confirmed by trying to write to each one. The permissions have been put
+back; **`AutoUpdateBehavior 1` has deliberately been left in place**, so
+launching Elden Ring *through Steam* while online will still start that update.
+The direct route above does not.
+
+### What this rules out
+
+* **The Windows version.** `10.0.22000` behaves exactly as `10.0.19045` did.
+  Whatever `MachineIDInfoThread` is failing at, it does not consult
+  `CurrentBuild` or `ProductName`.
+* **Stale credentials.** The copied token was accepted as far as the server,
+  which is further than a stale one gets; the loop happens before any token is
+  read anyway.
+* **Prefix history.** The old prefix had been made by CrossOver, alternated
+  between two Wines, and carried a `cxbottle.conf`, a hand-copied `syswow64`
+  and two dangling `d:` drives. None of that survives here, and the fault does.
+* **The dangling `d:` mappings, again.** They were not recreated — both pointed
+  at an ejected DMG — so this prefix's `\DosDevices` no longer has them, and
+  the loop is unchanged. The earlier ruling-out stands, now from the other
+  direction.
+* **A hard deadlock.** One start in eight got through. The thread can finish.
 
 ## Where to look next
 

@@ -1693,45 +1693,67 @@ fn applyFix(
 ) !u8 {
     const fix = app.fix orelse return 0;
 
-    const target = catalog.hostPath(arena, res.prefix.dir, fix.target) catch {
-        try w.print("protium install: {s} is not on C:\n", .{fix.target});
-        return 1;
-    };
-    const backup = catalog.hostPath(arena, res.prefix.dir, fix.backup) catch {
-        try w.print("protium install: {s} is not on C:\n", .{fix.backup});
-        return 1;
-    };
-    if (!res.sess.exists(target)) {
-        try w.print("protium install: {s} is not there, so there is nothing to replace.\n", .{fix.target});
-        return 1;
+    // The reason is printed once, before anything is touched, even though the
+    // fix may replace several files — it is one change, argued once.
+    var explained = false;
+    // A file the program has not written yet is not a failure: Steam fetches
+    // its second CEF tree during its own first run, so at install time one of
+    // the two is normally absent. Only "none of them were there" is worth a
+    // non-zero status.
+    var present: usize = 0;
+    var missing: usize = 0;
+
+    for (fix.replaces) |r| {
+        const target = catalog.hostPath(arena, res.prefix.dir, r.target) catch {
+            try w.print("protium install: {s} is not on C:\n", .{r.target});
+            return 1;
+        };
+        const backup = catalog.hostPath(arena, res.prefix.dir, r.backup) catch {
+            try w.print("protium install: {s} is not on C:\n", .{r.backup});
+            return 1;
+        };
+        if (!res.sess.exists(target)) {
+            missing += 1;
+            try w.print("\n{s} is not there yet, so there is nothing to replace.\n", .{r.target});
+            try w.writeAll("Run this command again after the program has started once.\n");
+            continue;
+        }
+        present += 1;
+
+        switch (try stateOf(io, target)) {
+            .current => {
+                try w.print("\nThe fix is already in place: {s}\n", .{r.target});
+                continue;
+            },
+            .older_standin => {
+                // An earlier protium wrote this. The backup beside it is still
+                // the program's own file, so it must not be overwritten with a
+                // stand-in — that would lose the only copy of the real binary.
+                try Io.Dir.cwd().writeFile(io, .{ .sub_path = target, .data = webhelper_shim });
+                try w.print("\nUpdated protium's stand-in at {s}\n", .{r.target});
+                continue;
+            },
+            .theirs => {},
+        }
+
+        if (!explained) {
+            try w.writeAll("\nprotium is about to replace one of this program's files:\n\n");
+            explained = true;
+        }
+        try w.print("  {s}\n", .{r.target});
+        try w.print("  kept as {s}\n", .{r.backup});
+
+        try copyFile(io, target, backup);
+        try Io.Dir.cwd().writeFile(io, .{ .sub_path = target, .data = webhelper_shim });
     }
 
-    switch (try stateOf(io, target)) {
-        .current => {
-            try w.print("\nThe fix is already in place: {s}\n", .{fix.target});
-            return 0;
-        },
-        .older_standin => {
-            // An earlier protium wrote this. The backup beside it is still the
-            // program's own file, so it must not be overwritten with a
-            // stand-in — that would lose the only copy of the real binary.
-            try Io.Dir.cwd().writeFile(io, .{ .sub_path = target, .data = webhelper_shim });
-            try w.print("\nUpdated protium's stand-in at {s}\n", .{fix.target});
-            return 0;
-        },
-        .theirs => {},
+    if (explained) {
+        try w.writeAll("\n");
+        try printIndented(w, "  ", fix.why);
+        try w.writeAll("\nDone. `protium install ");
+        try w.print("{s} --undo` puts the original back.\n", .{app.name});
     }
-
-    try w.writeAll("\nprotium is about to replace one of this program's files:\n\n");
-    try w.print("  {s}\n", .{fix.target});
-    try w.print("  kept as {s}\n\n", .{fix.backup});
-    try printIndented(w, "  ", fix.why);
-
-    try copyFile(io, target, backup);
-    try Io.Dir.cwd().writeFile(io, .{ .sub_path = target, .data = webhelper_shim });
-
-    try w.writeAll("\nDone. `protium install ");
-    try w.print("{s} --undo` puts the original back.\n", .{app.name});
+    if (present == 0 and missing != 0) return 1;
     return 0;
 }
 
@@ -1746,18 +1768,28 @@ fn undoFix(
         try w.print("protium install: {s} has no fix to undo.\n", .{app.name});
         return 0;
     };
-    const target = try catalog.hostPath(arena, res.prefix.dir, fix.target);
-    const backup = try catalog.hostPath(arena, res.prefix.dir, fix.backup);
+    var restored: usize = 0;
+    for (fix.replaces) |r| {
+        const target = try catalog.hostPath(arena, res.prefix.dir, r.target);
+        const backup = try catalog.hostPath(arena, res.prefix.dir, r.backup);
 
-    if (!res.sess.exists(backup)) {
-        try w.print("protium install: there is no {s} to restore.\n", .{fix.backup});
+        // A copy the fix never reached has nothing to put back. That is the
+        // normal case for a CEF tree the program had not downloaded yet, so
+        // it is skipped quietly and only a clean sweep counts as a failure.
+        if (!res.sess.exists(backup)) continue;
+
+        try copyFile(io, backup, target);
+        Io.Dir.cwd().deleteFile(io, backup) catch {};
+        try w.print("Restored {s}\n", .{r.target});
+        restored += 1;
+    }
+
+    if (restored == 0) {
+        try w.writeAll("protium install: there is nothing to restore.\n");
         try w.writeAll("Either the fix was never applied here, or it has already been undone.\n");
         return 1;
     }
 
-    try copyFile(io, backup, target);
-    Io.Dir.cwd().deleteFile(io, backup) catch {};
-    try w.print("Restored {s}\n", .{fix.target});
     try w.writeAll("Steam will look right again on its own terms, and paint black.\n");
     try w.print("Put the fix back with: protium install {s}\n", .{app.name});
     return 0;

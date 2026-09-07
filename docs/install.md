@@ -155,6 +155,15 @@ and it does not read as `4096 bytes` next to an expected two million.
 
 ## A 32-bit installer cannot run in a prefix protium made
 
+> [!NOTE]
+> **This no longer reproduces.** On 2026-09-07 two prefixes made by
+> `protium prefix new`, minutes apart on the same machine and the same
+> runtime, each came out with a populated `syswow64` — 875 entries, against
+> the 838 in `system32` — and 32-bit code ran in them without anything being
+> copied in. The rest of this section is kept because it is the measurement
+> that was taken, and because nothing here explains *why* it changed. See
+> [`syswow64` fills itself now](#syswow64-fills-itself-now) below.
+
 *Measured 2026-09-06, against Wine 11.0 built from `crossover-sources-26.3.0`,
 on an M4 Mac running macOS 26.6.1.*
 
@@ -215,6 +224,59 @@ this file records the measurement, not the explanation.
 needs a prefix whose 32-bit side came from somewhere else. `protium install`
 detects the situation and says so rather than letting the installer fail with
 a status code.
+
+## `syswow64` fills itself now
+
+*Measured 2026-09-07, against the same runtime — Wine 11.0 built from
+`crossover-sources-26.3.0`, D3DMetal 4.0b2 — on an M4 Mac running macOS 26.6.2
+(build 25G83).*
+
+The workaround above was prepared for and turned out not to be needed. Before
+deleting the `eldenring` prefix, its `drive_c/windows/syswow64` (866 entries)
+was copied out, on the documented expectation that `protium prefix new` would
+produce an empty one and `protium install steam` would refuse. Neither
+happened:
+
+| Prefix | `system32` | `syswow64` |
+| --- | --- | --- |
+| `prefix new eldenring`, 2026-09-07 | 838 | **875** |
+| `prefix new wowprobe`, same session | 838 | **875** |
+| the deleted prefix, filled by hand from CrossOver | 840 | 866 |
+
+Twice in a row, so it is not a one-off. The copy was never restored, and the
+prefix everything below was measured in has the `syswow64` `wineboot` wrote.
+
+Three things make this a real change rather than a mis-reading:
+
+* **The modules are protium's own, not CrossOver's.** The
+  `syswow64\kernel32.dll` in the new prefix is
+  `c487e81bf5906f9c17cb7b2a0018e3b41134fb4e3bbdcecb0417b9a6e0639a2a`, byte for
+  byte the runtime's own `lib/wine/i386-windows/kernel32.dll`. The hand-filled
+  directory it replaced carried CrossOver's, a different file
+  (`5c7b1ed81fc3f5d68ee008b74b681988990ac32cf17230c2a2aedd1f39b3d37b`). So
+  `wineboot` populated it from the runtime, which is what it is supposed to do.
+* **32-bit code runs.** `protium run "C:\windows\syswow64\cmd.exe" /c ver`
+  answers, and `protium install steam` — whose `SteamSetup.exe` is the 32-bit
+  PE that motivated all of this — ran start to finish in that prefix.
+* **The error blamed for it is still there.** `prefix new` still prints
+
+  ```
+  err:setupapi:SetupDefaultQueueCallbackW copy error 1812 … wineusb.inf
+  ```
+
+  and `syswow64` is populated anyway. Whatever stopped `wineboot` before, that
+  copy error was not it.
+
+**What changed is not known.** The runtime is the same tree, installed
+2026-09-05 and untouched since — its `lib/wine/i386-windows` has held all 1065
+modules the whole time — and `prefix new` still runs the same `wineboot -u`.
+The difference is therefore in something the 2026-09-06 measurement did not
+record. This file states what was measured on each date and does not invent a
+cause for the gap.
+
+The check in `protium install` is left in place: it costs nothing when the
+directory is populated, and it is the difference between a clear message and
+`could not load kernel32.dll, status c0000135` if this comes back.
 
 ## Adding an entry
 

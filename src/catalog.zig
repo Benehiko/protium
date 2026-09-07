@@ -73,15 +73,36 @@ pub const Fix = struct {
     summary: []const u8,
     /// The whole reason, in prose. Printed too.
     why: []const u8,
+    /// Every copy of the file that has to be replaced.
+    ///
+    /// **Why this is a list.** A program may ship the same executable more
+    /// than once and choose between the copies at run time, in which case
+    /// replacing one of them is a fix that works until the program picks a
+    /// different one. Steam does exactly this: `bin/cef` holds both
+    /// `cef.win64` and `cef.win7x64`, and the client selects between them by
+    /// the Windows version the prefix reports — measured on 2026-09-07, a
+    /// prefix reporting 10.0.19045 runs `cef.win64` and the same prefix
+    /// reporting 10.0.22000 runs `cef.win7x64` (docs/steam-login.md).
+    /// Patching only the first meant the rendering fix silently stopped
+    /// applying the moment the prefix was told it was Windows 11.
+    ///
+    /// A copy that is not on disk is skipped rather than failing: Steam
+    /// downloads the second tree during its first run, so at install time
+    /// only one of them usually exists.
+    replaces: []const Replacement,
+    /// Arguments the program must additionally be launched with for the
+    /// replacement to survive — Steam repairs its own files otherwise. Null
+    /// when the fix needs no help staying in place.
+    needs_launch_args: bool = false,
+};
+
+/// One file a `Fix` replaces, and where that file's own copy is kept.
+pub const Replacement = struct {
     /// The file replaced, as a Windows path inside the prefix.
     target: []const u8,
     /// Where the program's own copy is moved to. Beside the original, because
     /// the replacement finds it by name relative to itself.
     backup: []const u8,
-    /// Arguments the program must additionally be launched with for the
-    /// replacement to survive — Steam repairs its own files otherwise. Null
-    /// when the fix needs no help staying in place.
-    needs_launch_args: bool = false,
 };
 
 pub const App = struct {
@@ -125,10 +146,24 @@ pub const steam_webhelper_fix: Fix = .{
     \\in this repository; it appends the switch and launches Valve's own binary,
     \\which is moved aside rather than deleted.
     ,
-    .target = "C:\\Program Files (x86)\\Steam\\bin\\cef\\cef.win64\\" ++ webhelper.installed_as,
-    .backup = "C:\\Program Files (x86)\\Steam\\bin\\cef\\cef.win64\\" ++ webhelper.real_binary,
+    .replaces = &.{
+        .{
+            .target = cef_win64 ++ webhelper.installed_as,
+            .backup = cef_win64 ++ webhelper.real_binary,
+        },
+        .{
+            .target = cef_win7x64 ++ webhelper.installed_as,
+            .backup = cef_win7x64 ++ webhelper.real_binary,
+        },
+    },
     .needs_launch_args = true,
 };
+
+/// The two directories Steam keeps a `steamwebhelper.exe` in. Which one it
+/// runs is decided by the Windows version the prefix reports, so both are
+/// replaced — see `Fix.replaces`.
+const cef_win64 = "C:\\Program Files (x86)\\Steam\\bin\\cef\\cef.win64\\";
+const cef_win7x64 = "C:\\Program Files (x86)\\Steam\\bin\\cef\\cef.win7x64\\";
 
 pub const apps = [_]App{
     .{
@@ -166,19 +201,20 @@ pub const apps = [_]App{
         },
         .confidence = .verified,
         .evidence =
-        \\Runs and renders. On 2026-09-06, under Wine 11.0 built from
+        \\Runs and renders. On 2026-09-07, under Wine 11.0 built from
         \\crossover-sources-26.3.0 with D3DMetal 4.0b2 on an M4 Mac running
-        \\macOS 26.6.1: signs in offline, draws its store, library and account
-        \\menu, and launches games. The window painted black until the fix below;
-        \\with it, Steam's own cef_log.txt has no GPU lines at all, which is what
-        \\the same client wrote under CrossOver when it worked.
+        \\macOS 26.6.2: installs into a prefix `protium prefix new` had just
+        \\made, signs in offline, and launches games. The window painted black
+        \\until the fix below; with it, Steam's own cef_log.txt has no GPU
+        \\lines at all, which is what the same client wrote under CrossOver
+        \\when it worked.
         \\
-        \\One thing is still broken, and it is prefix creation rather than Steam:
-        \\`SteamSetup.exe` is 32-bit, and a prefix made by `protium prefix new`
-        \\has an empty syswow64, so the installer cannot start in it. protium
-        \\checks for that and says so rather than running it. Fill that directory
-        \\and this command installs Steam silently, start to finish
-        \\(docs/install.md).
+        \\Signing in ONLINE still does not work. Seven starts in eight never
+        \\get past `Schedule init returned 22` in logs/connection_log.txt, and
+        \\the one that connected was refused by Valve for using a credential
+        \\copied from another prefix. Offline mode is the route that works, and
+        \\it needs the account's appcache/ copied in as well as its credential
+        \\(docs/steam-login.md).
         ,
         .notes =
         \\Sign in online once so credentials and licences cache, then switch to
@@ -429,11 +465,48 @@ test "a fix names a file, a place to keep the original, and a reason" {
         // The reason is printed before the file is touched, so it has to be
         // long enough to actually be one.
         try testing.expect(fix.why.len > 80);
-        try testing.expect(std.mem.startsWith(u8, fix.target, "C:\\"));
-        try testing.expect(std.mem.startsWith(u8, fix.backup, "C:\\"));
-        // Replacing a file with itself would delete it.
-        try testing.expect(!std.mem.eql(u8, fix.target, fix.backup));
+        // A fix that replaces nothing is a fix that does nothing.
+        try testing.expect(fix.replaces.len != 0);
+        for (fix.replaces) |r| {
+            try testing.expect(std.mem.startsWith(u8, r.target, "C:\\"));
+            try testing.expect(std.mem.startsWith(u8, r.backup, "C:\\"));
+            // Replacing a file with itself would delete it.
+            try testing.expect(!std.mem.eql(u8, r.target, r.backup));
+        }
     }
+}
+
+test "no two replacements in one fix name the same file" {
+    // Applying a fix twice to one path would copy the stand-in over the
+    // backup on the second pass, losing the program's own binary — the one
+    // thing `--undo` needs.
+    for (&apps) |*a| {
+        const fix = a.fix orelse continue;
+        for (fix.replaces, 0..) |r, i| {
+            for (fix.replaces[i + 1 ..]) |other| {
+                try testing.expect(!std.mem.eql(u8, r.target, other.target));
+                try testing.expect(!std.mem.eql(u8, r.backup, other.backup));
+                // A backup must not be another replacement's target either.
+                try testing.expect(!std.mem.eql(u8, r.backup, other.target));
+                try testing.expect(!std.mem.eql(u8, r.target, other.backup));
+            }
+        }
+    }
+}
+
+test "the stand-in goes into every CEF tree Steam chooses between" {
+    // Steam picks between bin/cef/cef.win64 and bin/cef/cef.win7x64 by the
+    // Windows version the prefix reports (docs/steam-login.md, 2026-09-07).
+    // Replacing only one leaves the client painting black in the other.
+    const fix = find("steam").?.fix.?;
+    var has_win64 = false;
+    var has_win7x64 = false;
+    for (fix.replaces) |r| {
+        if (std.mem.indexOf(u8, r.target, "\\cef.win64\\") != null) has_win64 = true;
+        if (std.mem.indexOf(u8, r.target, "\\cef.win7x64\\") != null) has_win7x64 = true;
+    }
+    try testing.expect(has_win64);
+    try testing.expect(has_win7x64);
 }
 
 test "the stand-in and the catalogue agree on both file names" {
@@ -442,14 +515,16 @@ test "the stand-in and the catalogue agree on both file names" {
     // launches itself for ever and Steam never starts — a failure that would
     // look nothing like a renamed constant.
     const fix = find("steam").?.fix.?;
-    try testing.expect(std.mem.endsWith(u8, fix.target, webhelper.installed_as));
-    try testing.expect(std.mem.endsWith(u8, fix.backup, webhelper.real_binary));
+    for (fix.replaces) |r| {
+        try testing.expect(std.mem.endsWith(u8, r.target, webhelper.installed_as));
+        try testing.expect(std.mem.endsWith(u8, r.backup, webhelper.real_binary));
 
-    // …and they must live in the same directory, because that swap is the
-    // only thing that relates them.
-    const target_dir = fix.target[0 .. fix.target.len - webhelper.installed_as.len];
-    const backup_dir = fix.backup[0 .. fix.backup.len - webhelper.real_binary.len];
-    try testing.expectEqualStrings(target_dir, backup_dir);
+        // …and they must live in the same directory, because that swap is the
+        // only thing that relates them.
+        const target_dir = r.target[0 .. r.target.len - webhelper.installed_as.len];
+        const backup_dir = r.backup[0 .. r.backup.len - webhelper.real_binary.len];
+        try testing.expectEqualStrings(target_dir, backup_dir);
+    }
 }
 
 test "a fix that Steam would undo comes with the flags that stop it" {
