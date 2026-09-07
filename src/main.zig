@@ -24,6 +24,7 @@ const session = @import("session.zig");
 const catalog = @import("catalog.zig");
 const fetch = @import("fetch.zig");
 const pe = @import("pe.zig");
+const teardown = @import("teardown.zig");
 
 /// The stand-in `steamwebhelper.exe`, built for x86_64-windows from
 /// `src/webhelper.zig` by this repository's own `build.zig` and embedded here.
@@ -49,6 +50,7 @@ const usage =
     \\  protium run <program> [args...]   Launch something in the default prefix.
     \\  protium prefix list               Show the prefixes and which is default.
     \\  protium prefix new <name>         Create a prefix and boot it.
+    \\  protium prefix stop [<name>]      Shut down the Wine running in a prefix.
     \\  protium use <name>                Make a prefix the default.
     \\  protium env                       Print the environment, as shell code.
     \\
@@ -66,6 +68,7 @@ const usage =
     \\  --runtime <name>  Use this Wine instead of the default.
     \\  --shell <name>    fish, zsh, bash or posix. Defaults to $SHELL.
     \\  --force           install: run the installer even if it is already there.
+    \\                    prefix stop: skip the polite request and signal at once.
     \\  --refresh         install: download again rather than reusing the copy.
     \\  --undo            install: put back the program's own file protium replaced.
     \\
@@ -533,8 +536,9 @@ fn runPrefix(
 
     if (std.mem.eql(u8, sub, "list")) return prefixList(arena, io, vars, w);
     if (std.mem.eql(u8, sub, "new")) return prefixNew(arena, io, vars, rest, w);
+    if (std.mem.eql(u8, sub, "stop")) return prefixStop(arena, io, vars, rest, w);
 
-    try w.print("protium prefix: no such subcommand `{s}` — try `list` or `new`\n", .{sub});
+    try w.print("protium prefix: no such subcommand `{s}` — try `list`, `new` or `stop`\n", .{sub});
     return 2;
 }
 
@@ -700,6 +704,314 @@ fn prefixNew(
     return 0;
 }
 
+// ---------------------------------------------------------------------------
+// prefix stop
+
+/// A prefix that is running holds a Wine session open: one wineserver, and
+/// every process it is serving. Stopping it politely means asking the
+/// wineserver to shut down, which is what `wineserver -k` does — but a
+/// wineserver that has stopped answering will not answer that either, and
+/// `wineserver -k` is itself a Wine process, so it joins the queue instead of
+/// clearing it. That is the case this command exists for, so the polite
+/// request is given a deadline and the rest is done with signals.
+fn prefixStop(
+    arena: std.mem.Allocator,
+    io: Io,
+    vars: *std.process.Environ.Map,
+    args: []const []const u8,
+    w: *Io.Writer,
+) !u8 {
+    var opts = try parseOptions(arena, args, false);
+    if (opts.bad) |b| return reportBadOption(w, "prefix stop", b);
+    // `prefix stop eldenring` and `prefix stop --prefix eldenring` are the
+    // same request; `prefix new` takes its name positionally, so this does.
+    if (opts.positional.len > 0) opts.prefix = opts.positional[0];
+
+    const sess = session.Session.open(arena, io, vars) catch |err| switch (err) {
+        error.NoHome => {
+            try w.writeAll("protium: no HOME, and no PROTIUM_HOME to use instead\n");
+            return 1;
+        },
+        else => |e| return e,
+    };
+    const px = sess.prefix(opts.prefix) catch |err| {
+        try reportUnresolved(sess, w, layout.prefixes, "prefix", opts.prefix, err);
+        return 1;
+    };
+
+    // Deliberately not `resolve`: stopping a prefix is signalling processes,
+    // and that needs no Wine. A runtime is wanted only for the polite route
+    // below, so an installation without one — or with an ambiguous one — can
+    // still be brought down rather than being told to go and fix its
+    // defaults first.
+    //
+    // Both halves are looked for, and neither stands in for the other. The
+    // lock names the wineserver exactly; the environment names what it was
+    // serving. A session whose wineserver has already died leaves the second
+    // without the first, and those orphans are a large part of why this
+    // command exists — keying the whole thing off the lock would report them
+    // as nothing at all.
+    const server_pid = try findServer(arena, px.dir, w);
+    const running = try prefixProcesses(arena, px.dir, server_pid);
+
+    if (server_pid == null and running.len == 0) {
+        try w.print("Nothing is running in the prefix {s}.\n", .{px.name});
+        return 0;
+    }
+
+    try w.print("The prefix {s} has ", .{px.name});
+    if (server_pid) |pid| {
+        try w.print("a wineserver running as pid {d}", .{pid});
+        if (running.len > 0) try w.print(", serving {d} process{s}", .{
+            running.len,
+            if (running.len == 1) "" else "es",
+        });
+    } else {
+        try w.print("{d} process{s} left over from a wineserver that is already gone", .{
+            running.len,
+            if (running.len == 1) "" else "es",
+        });
+    }
+    try w.writeAll(".\n");
+
+    var settled = false;
+    if (!opts.force) {
+        if (server_pid) |pid| {
+            settled = try askNicely(arena, io, vars, sess, px, opts, pid, w);
+        }
+    }
+
+    if (!settled) {
+        // The wineserver first: its clients are blocked in calls to it, and
+        // some of them exit on their own once it is gone.
+        if (server_pid) |pid| {
+            try w.print("Killing the wineserver, pid {d}.\n", .{pid});
+            signal(pid, KILL);
+            _ = waitFor(io, pid, reap_deadline_ms);
+        }
+
+        var left: usize = 0;
+        for (running) |pid| {
+            if (!alive(pid)) continue;
+            signal(pid, KILL);
+            left += 1;
+        }
+        if (left > 0) {
+            try w.print("Killing {d} process{s} that did not follow it.\n", .{
+                left,
+                if (left == 1) "" else "es",
+            });
+            _ = waitForAll(io, running, reap_deadline_ms);
+        }
+    }
+
+    // Saying "stopped" is only worth anything if it was checked, and checking
+    // means every process rather than just the wineserver. A process the
+    // kernel is holding does not die when it is killed, and calling that
+    // prefix stopped would be a claim the next launch disproves.
+    var stuck: std.ArrayList(std.c.pid_t) = .empty;
+    if (server_pid) |pid| if (alive(pid)) try stuck.append(arena, pid);
+    for (running) |pid| if (alive(pid)) try stuck.append(arena, pid);
+
+    if (stuck.items.len > 0) {
+        try w.print("\n{d} process{s} did not die:", .{
+            stuck.items.len,
+            if (stuck.items.len == 1) "" else "es",
+        });
+        for (stuck.items) |pid| try w.print(" {d}", .{pid});
+        try w.writeAll(
+            \\
+            \\
+            \\A process the kernel is holding cannot be signalled away. It goes when
+            \\whatever it is waiting on returns, or when the machine restarts, and the
+            \\prefix is not stopped until it does.
+            \\
+        );
+        return 1;
+    }
+    try w.print("The prefix {s} is stopped.\n", .{px.name});
+    return 0;
+}
+
+/// Ask the wineserver to shut down, the way Wine's own tooling does, and give
+/// it a deadline. True when it went.
+///
+/// The deadline is the point of this: `wineserver -k` is itself a Wine
+/// process, so it has to be served by the very wineserver it is asking to
+/// leave. Against one that has stopped answering it does not fail — it joins
+/// the queue and waits for as long as it is left to, which is why it cannot
+/// be the whole of a teardown.
+fn askNicely(
+    arena: std.mem.Allocator,
+    io: Io,
+    vars: *std.process.Environ.Map,
+    sess: session.Session,
+    px: session.Session.Resolved,
+    opts: Options,
+    server_pid: std.c.pid_t,
+    w: *Io.Writer,
+) !bool {
+    const rt = sess.runtime(opts.runtime) catch return false;
+    const server = try sess.join(&.{ rt.dir, layout.wineserver });
+    if (!sess.exists(server)) return false;
+
+    try w.writeAll("Asking it to shut down.\n");
+    try w.flush();
+
+    const computed = try env.compute(arena, sess.site(rt, px), sess.inherited(), &.{});
+    for (computed) |v| try vars.put(v.name, v.value);
+
+    var child = try std.process.spawn(io, .{ .argv = &.{ server, "-k" }, .environ_map = vars });
+    if (waitFor(io, server_pid, shutdown_deadline_ms)) {
+        _ = child.wait(io) catch {};
+        try w.writeAll("It shut down.\n");
+        return true;
+    }
+
+    // The polite request is now stuck behind the wineserver it was asking to
+    // leave, so it goes with everything else.
+    try w.print(
+        "It did not shut down within {d} seconds, so it is not answering.\n",
+        .{shutdown_deadline_ms / 1000},
+    );
+    child.kill(io);
+    _ = child.wait(io) catch {};
+    return false;
+}
+
+/// How long the wineserver is given to honour `-k` before it is treated as
+/// unresponsive. Long enough for a healthy session with work to flush, short
+/// enough that a wedged one does not hold the terminal.
+const shutdown_deadline_ms = 5_000;
+
+/// How long a killed process is given to be reaped before its clients are
+/// dealt with. SIGKILL is not instant when the process is in the kernel.
+const reap_deadline_ms = 2_000;
+
+/// Find the wineserver serving a prefix, by asking who holds the write lock
+/// on the lock file in the directory Wine made for it. Nothing is searched
+/// for by name: the lock is the wineserver's own claim on the prefix, so the
+/// answer is exact even with several wineservers running.
+fn findServer(arena: std.mem.Allocator, prefix_dir: []const u8, w: *Io.Writer) !?std.c.pid_t {
+    var st: std.c.Stat = undefined;
+    const dir_z = try arena.dupeZ(u8, prefix_dir);
+    if (std.c.fstatat(std.c.AT.FDCWD, dir_z, &st, 0) != 0) {
+        try w.print("protium prefix stop: cannot look at {s}\n", .{prefix_dir});
+        return null;
+    }
+    const dir = try teardown.serverDir(
+        arena,
+        teardown.tmp_dir,
+        std.c.getuid(),
+        @intCast(st.dev),
+        @intCast(st.ino),
+    );
+    const path = try std.fs.path.join(arena, &.{ dir, teardown.lock_file });
+
+    const path_z = try arena.dupeZ(u8, path);
+    const fd = std.c.open(path_z, .{ .ACCMODE = .RDONLY });
+    if (fd < 0) return null;
+    defer _ = std.c.close(fd);
+
+    var fl: std.c.Flock = std.mem.zeroes(std.c.Flock);
+    fl.type = std.c.F.WRLCK;
+    fl.whence = std.c.SEEK.SET;
+    if (std.c.fcntl(fd, std.c.F.GETLK, @intFromPtr(&fl)) < 0) return null;
+    if (fl.type == std.c.F.UNLCK) return null;
+    return fl.pid;
+}
+
+// ---------------------------------------------------------------------------
+// Asking the kernel what is running
+
+extern "c" fn proc_listallpids(buffer: ?*anyopaque, buffersize: c_int) c_int;
+
+const CTL_KERN = 1;
+const KERN_ARGMAX = 8;
+const KERN_PROCARGS2 = 49;
+const KILL = 9;
+
+/// Declared here rather than taken from `std.posix`, which types the signal
+/// as an enumeration with no member for zero — and zero is the one that asks
+/// whether a process exists without disturbing it.
+extern "c" fn kill(pid: std.c.pid_t, sig: c_int) c_int;
+
+/// Every process whose `WINEPREFIX` is this prefix, this process excluded.
+/// A process whose arguments cannot be read — one belonging to another user,
+/// or one that exited while we were asking — is left out rather than guessed
+/// at, because the list is about to be signalled.
+fn prefixProcesses(
+    arena: std.mem.Allocator,
+    prefix_dir: []const u8,
+    except: ?std.c.pid_t,
+) ![]const std.c.pid_t {
+    var out: std.ArrayList(std.c.pid_t) = .empty;
+
+    const count = proc_listallpids(null, 0);
+    if (count <= 0) return out.items;
+    const pids = try arena.alloc(std.c.pid_t, @intCast(count));
+    const got = proc_listallpids(pids.ptr, @intCast(pids.len * @sizeOf(std.c.pid_t)));
+
+    const buf = try arena.alloc(u8, argMax());
+    const me = std.c.getpid();
+    for (pids[0..teardown.pidCount(got, pids.len)]) |pid| {
+        if (pid <= 0 or pid == me) continue;
+        if (except) |e| if (pid == e) continue;
+        const args = processArgs(pid, buf) orelse continue;
+        if (teardown.belongsTo(args, prefix_dir)) try out.append(arena, pid);
+    }
+    return out.items;
+}
+
+/// The largest argument block the kernel will hand back, which is the size
+/// the buffer for one has to be.
+fn argMax() usize {
+    var mib = [_]c_int{ CTL_KERN, KERN_ARGMAX };
+    var value: c_int = 0;
+    var len: usize = @sizeOf(c_int);
+    if (std.c.sysctl(&mib, mib.len, &value, &len, null, 0) != 0) return 256 << 10;
+    return @intCast(value);
+}
+
+fn processArgs(pid: std.c.pid_t, buf: []u8) ?[]const u8 {
+    var mib = [_]c_int{ CTL_KERN, KERN_PROCARGS2, pid };
+    var len: usize = buf.len;
+    if (std.c.sysctl(&mib, mib.len, buf.ptr, &len, null, 0) != 0) return null;
+    return buf[0..len];
+}
+
+fn alive(pid: std.c.pid_t) bool {
+    return kill(pid, 0) == 0;
+}
+
+fn signal(pid: std.c.pid_t, sig: c_int) void {
+    _ = kill(pid, sig);
+}
+
+/// Wait for every process in a list to go away, up to one shared deadline.
+/// True when they all did.
+fn waitForAll(io: Io, pids: []const std.c.pid_t, deadline_ms: i64) bool {
+    var waited: i64 = 0;
+    while (waited < deadline_ms) : (waited += poll_step_ms) {
+        if (noneAlive(pids)) return true;
+        io.sleep(.fromMilliseconds(poll_step_ms), .awake) catch break;
+    }
+    return noneAlive(pids);
+}
+
+fn noneAlive(pids: []const std.c.pid_t) bool {
+    for (pids) |pid| if (alive(pid)) return false;
+    return true;
+}
+
+/// Wait for a process to go away, up to a deadline. True when it did.
+fn waitFor(io: Io, pid: std.c.pid_t, deadline_ms: i64) bool {
+    return waitForAll(io, &.{pid}, deadline_ms);
+}
+
+/// How often a wait looks again. Short enough that a healthy shutdown is not
+/// padded out, long enough not to spin.
+const poll_step_ms = 50;
 // ---------------------------------------------------------------------------
 // run
 

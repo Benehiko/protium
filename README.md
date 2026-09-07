@@ -174,6 +174,7 @@ protium run "C:\Program Files\…\Game.exe"
 
 protium prefix list                    # your prefixes; * is the default
 protium prefix new skyrim              # another one
+protium prefix stop                    # shut down the Wine running in one
 protium use skyrim                     # make it the default
 ```
 

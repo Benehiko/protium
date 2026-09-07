@@ -194,6 +194,50 @@ It reports the program's own exit status as its own, so it can be used inside
 a script. This is also the way to run something in a prefix that is not the
 default without disturbing the shell you are in.
 
+
+## Stopping a prefix
+
+A prefix that is running holds a Wine session open: one `wineserver`, and
+every process it is serving. Closing the program's window does not always
+close the session, and a wedged session can outlive everything that started
+it.
+
+```
+$ protium prefix stop
+$ protium prefix stop eldenring
+$ protium prefix stop eldenring --force
+```
+
+Without `--force` this asks politely first, by running the prefix's own
+`wineserver -k`, and gives it five seconds. That is the normal case and it is
+the one that lets Wine flush the registry on the way out.
+
+The five seconds matter. `wineserver -k` is itself a Wine process, so it has
+to be served by the very wineserver it is asking to leave. When that server
+has stopped answering, `-k` does not fail — it joins the queue and waits
+forever, which is why it cannot be the whole of a teardown. Past the deadline,
+`protium prefix stop` signals instead: the wineserver first, because its
+clients are blocked in calls to it and some exit on their own once it is gone,
+then anything still running. `--force` skips straight to that.
+
+It reports what it did, and it checks before claiming the prefix is stopped.
+
+### How it finds the right processes
+
+Not by name. Wine makes one directory per prefix under `/tmp`, named from the
+prefix directory's device and inode — the prefix at
+`~/.local/share/protium/prefixes/eldenring` has device 16777232 and inode
+22138619, and Wine's directory for it is
+`/tmp/.wine-501/server-1000010-151cefb`. Inside it is a `lock` file, and the
+wineserver holds a write lock on that file for as long as it runs. Asking the
+kernel who owns that lock names the wineserver exactly, which matters when
+several prefixes are running at once.
+
+The processes it was serving are found by their environment: every one of them
+carries `WINEPREFIX`, and macOS will hand back a process's environment for the
+asking. A process whose environment cannot be read is left out rather than
+guessed at, because the list is about to be signalled.
+
 ## Do not point two different Wines at one prefix
 
 Wine decides whether a prefix needs updating by comparing
