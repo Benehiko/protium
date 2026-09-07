@@ -141,6 +141,15 @@ Add these to your account's block in
 > protium run "C:\Program Files (x86)\Steam\steam.exe" -noreactlogin
 > ```
 
+> [!WARNING]
+> **Do not press "Go online" in the client, and expect to set
+> `WantsOfflineMode` more than once.** Steam owns `loginusers.vdf` and rewrites
+> it: any attempt at an online sign-in resets that flag to `"0"`, and the next
+> launch hangs on "Logging in…" for ever. Set it back with the client stopped —
+> `protium prefix stop`, edit, launch — because a running Steam overwrites the
+> file from memory as it exits. The button is not broken and the click is
+> received; the log-on behind it is what cannot complete here.
+
 ### Run Elden Ring
 
 Launch the game directly, with Steam signed in and running. `eldenring.exe`
