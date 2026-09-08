@@ -66,6 +66,10 @@ and `LDFLAGS` at it directly and rebuilt none of them; the generated `config.h`
 then has `SONAME_LIBFREETYPE "libfreetype.6.dylib"` and `SONAME_LIBGNUTLS
 "libgnutls.30.dylib"`.
 
+Below, **`$DEPS`** is that prefix: `$SCRATCH/x86deps` on a first build, which is
+where the table above puts it, and `~/.local/share/protium/deps` once protium
+keeps it. Both 2026-09-08 builds used the second.
+
 **Recording the soname in `config.h` is not the same as having the library.**
 Wine `dlopen`s both of these by bare soname at run time, so each one has to be
 copied into the installed runtime's `lib/` as well — see [Installing it
@@ -219,8 +223,8 @@ $SRC/configure \
   --prefix="$SCRATCH/wine-install" \
   CC="/usr/bin/clang -arch x86_64" \
   CXX="/usr/bin/clang++ -arch x86_64" \
-  CPPFLAGS="-I$SCRATCH/x86deps/include/freetype2 -I$SCRATCH/x86deps/include" \
-  LDFLAGS="-L$SCRATCH/x86deps/lib"
+  CPPFLAGS="-I$DEPS/include/freetype2 -I$DEPS/include" \
+  LDFLAGS="-L$DEPS/lib"
 
 make -j"$(sysctl -n hw.ncpu)"
 ```
@@ -325,27 +329,65 @@ Two things must then be added to it:
   own:
 
   ```sh
-  cp "$SCRATCH"/x86deps/lib/lib{gnutls.30,nettle.8,hogweed.6,gmp.10}.dylib "$install"/lib/
+  cp "$DEPS"/lib/lib{gnutls.30,nettle.8,hogweed.6,gmp.10}.dylib "$install"/lib/
   cd "$install"/lib
   install_name_tool -id @loader_path/libgnutls.30.dylib libgnutls.30.dylib
   for dep in libnettle.8 libhogweed.6 libgmp.10; do
-      install_name_tool -change "$SCRATCH/x86deps/lib/$dep.dylib" "@loader_path/$dep.dylib" libgnutls.30.dylib
+      install_name_tool -change "$DEPS/lib/$dep.dylib" "@loader_path/$dep.dylib" libgnutls.30.dylib
   done
   ```
 
   Check it with `WINEDEBUG=+winediag` on any launch: a runtime that is missing
   it prints `Failed to load libgnutls, secure connections will not be
   available`, and a runtime that has it prints nothing.
+
+  **That snippet rewrites `libgnutls.30.dylib` and nothing else, so the tree
+  does not yet stand on its own.** The copies of `libhogweed.6.dylib` and
+  `libfreetype.6.dylib` still name their own dependencies by absolute
+  `$DEPS/lib` path — `otool -L "$install"/lib/libhogweed.6.dylib` shows
+  `libnettle` and `libgmp` there — so deleting `$DEPS` breaks TLS in a runtime
+  that appears to carry its own libraries. Finish the job, or keep `$DEPS`:
+
+  ```sh
+  cd "$install"/lib
+  for lib in libfreetype.6 libnettle.8 libhogweed.6 libgmp.10; do
+      install_name_tool -id "@loader_path/$lib.dylib" "$lib.dylib"
+      for dep in libnettle.8 libhogweed.6 libgmp.10; do
+          install_name_tool -change "$DEPS/lib/$dep.dylib" "@loader_path/$dep.dylib" "$lib.dylib"
+      done
+  done
+  ```
+
+  Verify with `otool -L` on each of the five: no line should name `$DEPS`.
+
 * **D3DMetal**, merged in — see [`d3dmetal.md`](d3dmetal.md) for why merged and
   not moved aside. `protium redist <apple-redist-lib> --into <install>/lib`
   prints the right procedure for that destination. A second runtime built from
   the same tree can take it from the first instead of from Apple's DMG: `ditto`
-  `lib/external` and `lib/d3dmetal-shims` across, move the new build's own
-  `d3d10.dll d3d11.dll d3d12.dll dxgi.dll` into `lib/wine-d3d-originals`, copy
-  the four shims into `lib/wine/x86_64-windows`, and recreate the four
-  `x86_64-unix/*.so` symlinks to `../../external/libd3dshared.dylib`. `protium
-  redist <install>/lib` then reports the version it found, and it had better be
-  the same one.
+  `lib/external` across, move the new build's own `d3d10.dll d3d11.dll
+  d3d12.dll dxgi.dll` into `lib/wine-d3d-originals`, copy the first runtime's
+  four installed `lib/wine/x86_64-windows/{d3d10,d3d11,d3d12,dxgi}.dll` into
+  the new one's, and recreate the four `x86_64-unix/*.so` symlinks to
+  `../../external/libd3dshared.dylib`. `protium redist <install>/lib` then
+  reports the version it found, and it had better be the same one.
+
+  **Take the shims from `lib/wine/x86_64-windows`, not from
+  `lib/d3dmetal-shims`.** That second directory is a copy the original merge
+  kept aside, and it is not necessarily complete: on the machine this was
+  verified on it held `d3d10.dll`, `d3d11.dll` and `dxgi.dll` and *not*
+  `d3d12.dll` — three of the four, missing the one that matters most. After a
+  merge the installed `x86_64-windows` directory holds all four of Apple's
+  shims, and the sizes tell them apart: Apple's `d3d12.dll` is 192 KB there
+  against 540 KB for the `d3d12.dll` this build produces. Check them against
+  the inventory in [`d3dmetal.md`](d3dmetal.md) rather than trusting either
+  directory's name.
+
+  As of 2026-09-08 this machine keeps only `wine-11.0-cx26.3-p2`; the
+  unpatched runtime and `-p1` were deleted once the Elden Ring prefix had been
+  migrated onto the `protium` profile. The shortcut above therefore has no
+  first runtime to copy from any more, and the next rebuild takes D3DMetal
+  from Apple's DMG again — `protium redist <apple-redist-lib> --into
+  <install>/lib`.
 
 A second runtime from the same tree has one more step, or the prefix pays for
 it. Wine keeps the modification time of the `wine.inf` it last ran in

@@ -482,10 +482,11 @@ launch one.** Two reasons, and they are different:
   here: `status` names the next step rather than taking it.
 * `run` cannot tell whether the runtime it is about to use carries
   `patches/0002` — the state lives in the prefix, the patch lives in the Wine.
-  A prefix on the old name is *correct* for `wine-11.0-cx26.3-p1` and only
-  wrong for `-p2`, so refusing would break a working setup to prevent a
-  problem that setup does not have. `prefix list` reports the state and leaves
-  the judgement where the information is.
+  A prefix on the old name is *correct* for any runtime built without 0002 —
+  `wine-11.0-cx26.3-p1` was one — and only wrong for one built with it, so
+  refusing would break a working setup to prevent a problem that setup does
+  not have. `prefix list` reports the state and leaves the judgement where the
+  information is.
 
 The command refuses more than it does:
 
