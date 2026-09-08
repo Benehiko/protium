@@ -10,7 +10,11 @@ with D3DMetal 4.0b2, on an M4 Mac running macOS 26.6.1. Re-measured 2026-09-07
 in a prefix rebuilt from nothing, reporting Windows 11 and carrying freshly
 copied credentials: [neither changed the
 outcome](#windows-11-and-fresh-credentials-change-nothing), and the failure
-turns out to be intermittent rather than permanent.*
+turns out to be intermittent rather than permanent. Root cause found
+2026-09-08: [a Wine bug in how its two halves pass a `BOOLEAN`, exposed by
+protium's clang-built PE side](#the-caller-read-directly--and-the-bug-it-exposes),
+proven by zeroing one stack slot in the running client and watching it
+connect.*
 
 ## The short version
 
@@ -39,6 +43,16 @@ thread named `MachineIDInfoThread`, which never finishes: it re-asks the
 wineserver for the first entry of `\DosDevices` several hundred thousand times
 a second and never advances past it. Measured on a running client — see
 [Confirmed at runtime](#confirmed-at-runtime-the-thread-is-machineidinfothread).
+
+Why it never advances is now known, and it is not Steam's doing. The thread is
+inside Wine's own `GetLogicalDrives`, answering a WMI query; the cursor *is*
+carried between calls, and the callee ignores it because a `BOOLEAN` the PE
+side wrote as one byte is read by the unix side as 32 bits, with whatever was
+on the stack above that byte. Which is also why it is a race: the die is the
+stale contents of one stack slot. The evidence, the CrossOver comparison, and
+the one-qword live proof are in [The caller, read
+directly](#the-caller-read-directly--and-the-bug-it-exposes); the fix is
+`patches/0001-…`, built into a second runtime, `wine-11.0-cx26.3-p1`.
 
 ## The failure, stated precisely
 
@@ -610,6 +624,9 @@ cannot currently produce (the unwinder faults one frame further up), or Wine's
 sources for `GetLogicalDrives` and `NtQueryDirectoryObject` — which the build
 recipe deletes with its scratch directory.
 
+*Settled 2026-09-08, and both readings were wrong: see [The caller, read
+directly](#the-caller-read-directly--and-the-bug-it-exposes).*
+
 ## Windows 11 and fresh credentials change nothing
 
 *Measured 2026-09-07 in a prefix deleted and rebuilt from nothing for this
@@ -846,7 +863,10 @@ The direct route above does not.
   direction.
 * **A hard deadlock.** One start in eight got through. The thread can finish.
 
-## Where to look next
+## Where to look next (as of 2026-09-07)
+
+*Kept as written; every item below was answered the next day, in the section
+that follows.*
 
 Get the caller. `winedbg`'s unwinder faults immediately above
 `GetLogicalDrives`, so the frame that matters is the one frame it will not
@@ -864,3 +884,325 @@ the CEF one in [`steam-rendering.md`](steam-rendering.md). Both are "a thread
 or process starts, and the thing it is supposed to hand back never arrives",
 and neither has been traced to a call yet. They may be one bug.
 
+
+## The caller, read directly — and the bug it exposes
+
+*Measured 2026-09-08 against the same client build 1788652215, in the same
+prefix, under Wine 11.0 built from `crossover-sources-26.3.0` (sha256
+`ac99c8ca4b3848f3e81784135f023df266b61c2345726ea55a50b3e030dd6872`) with
+D3DMetal 4.0b2, on an M4 Mac running macOS 26.6.2 build 25G83 with Xcode 26.6
+(Apple clang 21.0.0, `clang-2100.1.1.101`). The CrossOver control is CrossOver
+26.3's own `lib/wine`. Four client starts were made, every one with
+`loginusers.vdf` restored from the bottle first, and every one returned
+`Schedule init returned 22`.*
+
+Everything above this line was measured honestly and is wrong in one place:
+the two "readings" in [Still unknown](#still-unknown) are both false, and the
+thing they were trying to explain is not in Steam at all. The thread spins
+inside Wine's own `GetLogicalDrives`, the loop's cursor *is* carried between
+calls — and the callee ignores it, because a `BOOLEAN` argument that one
+compiler wrote as a byte is read by another compiler as 32 bits.
+
+### The frame above `GetLogicalDrives`, without the unwinder
+
+`winedbg` will not unwind past `GetLogicalDrives+0x103`, but it does not have
+to. protium's `kernelbase.dll` is unstripped, so `llvm-objdump
+--disassemble-symbols=GetLogicalDrives` (Xcode's, nothing installed) gives the
+frame layout exactly:
+
+```
+174072080  push r15; push r14; push rsi; push rdi; push rbx   ; 5 × 8 bytes
+174072087  sub  rsp, 0x490
+...
+17407210b  mov  byte [rsp+0x20], 0        ; restart      = FALSE   <- one byte
+174072110  lea  rdx, [rsp+0x90]           ; info
+174072118  mov  r8d, 0x400                ; size         = 1024
+17407211e  mov  r9b, 1                    ; single_entry = TRUE    <- one byte
+174072121  call [NtQueryDirectoryObject]  ; first call, returns to +0xa7
+...
+17407216f  mov  byte [rsp+0x20], 0        ; the same store, in the loop
+174072180  call r15                       ; returns to +0x103     <- the frame winedbg shows
+```
+
+So with `rsp` as `winedbg` reports it for the stopped thread (it points at the
+`+0x103` return address), everything in the function is at a fixed offset:
+`ctx` at `rsp+0x50`, `len` at `rsp+0x54`, the `restart` argument slot at
+`rsp+0x28`, the entry buffer at `rsp+0x98`, and the function's own return
+address at `rsp+0x4c0` (5 pushes plus `0x490`, plus the call). `winedbg` takes
+several commands from a file — `--file Z:\path\to\cmds.txt` — so `thread <tid>`,
+`info regs` and `x/168g $rsp` are one attach, not three. (`x/…g` prints
+16-byte GUIDs, not qwords; `x/2d` prints two decimal dwords.)
+
+Read that way, on the first start of the day (`MachineIDInfoThread` tid
+`0x2b0`, `rsp = 0x0eb5dc18`):
+
+| Slot | Value | Meaning |
+| --- | --- | --- |
+| `[rsp]` | `0x6fffff742183` | `kernelbase+0x72183` = `GetLogicalDrives+0x103`, as `bt` said |
+| `[rsp+0x50]` | `1` | **`ctx` — the cursor has advanced to 1** |
+| `[rsp+0x54]` | `238` | `len`: 32 + 32 + 146 + 2 + 24 + 2, the size of entry 0 |
+| `[rsp+0x98]` | `Length 146, "HID#VID_845E&PID_0001#…"` | the buffer holds entry 0 |
+| `[rsp+0x4c0]` | `0x6fffe5b547cf` | **`wbemprox+0x47cf` = `fill_diskpartition+0x3f`** |
+
+The next return addresses up the stack are `wbemprox!execute_view+0x1af`,
+`wbemprox!exec_query+0x61`, and then `steamclient64` (`+0xe735a7`, `+0xe74817`,
+`+0xe74ba5`). `steamclient64.dll` carries the strings `SELECT * FROM
+Win32_DiskDrive`, `SELECT * FROM Win32_DiskPartition`, `SELECT * FROM
+Win32_PhysicalMedia`, `CMachineIDInfo::FillInMachineIDInfo()` and
+`MachineIDInfoThread`. So the machine ID is computed from WMI, Wine's
+`wbemprox.dll` answers the query, and its `fill_diskpartition` (`builtin.c`)
+begins with `DWORD drives = GetLogicalDrives();`. That is the whole caller
+chain, and Steam is at the far end of it doing something perfectly ordinary.
+
+Twelve samples over about a minute, all with `ctx = 1`, all with the buffer
+holding entry 0, all with the same `rsp`. A loop over sixty-odd entries sampled
+at random does not land on the same entry twelve times.
+
+### The trace, re-taken: the loop is inside `GetLogicalDrives`
+
+The earlier trace was right about `index=0` and right about two threads, and
+did not look at what came before. Nine seconds of `WINEDEBUG=+server` this time
+(456 MB, 3,606,949 lines):
+
+| Thread | Process | Name | `get_directory_entries` requests | `index` | reply |
+| --- | --- | --- | --- | --- | --- |
+| `02b0` | `0020` `steam.exe` | `MachineIDInfoThread` | 699,684 | `0` in all | `0`, `count=1`, entry 0, in all |
+| `0180` | `0148` `steamwebhelper.exe` | `ThreadPoolForegroundWorker` | 713,937 | `0` in all | same |
+
+and the shape of it, for `02b0`: one `open_directory( \DosDevices )` → handle
+`039c`, then `get_directory_entries( handle=039c, index=0, max_count=1 )`
+699,684 times, and **no `close_handle` and no second `open_directory`, ever**.
+The other thread is the same, in Chromium. So this is not a caller re-running
+`GetLogicalDrives`; it is one call that never returns — reading 2 in the old
+list — except that reading 2 said the cursor was not carried, and the cursor is
+sitting in `ctx` at `1`.
+
+### Wine's source, kept this time, says what that means
+
+`docs/wine-build.md` now keeps the tree (`$SCRATCH` is
+`~/.local/share/protium/build`). `dlls/kernelbase/volume.c`:
+
+```c
+char data[1024];
+ULONG ctx = 0, len;
+while (!NtQueryDirectoryObject( handle, info, sizeof(data), 1, 0, &ctx, &len ))
+    if (info->ObjectName.Length == 2*sizeof(WCHAR) && info->ObjectName.Buffer[1] == ':')
+        bitmask |= 1 << (info->ObjectName.Buffer[0] - 'A');
+```
+
+and `dlls/ntdll/unix/sync.c`:
+
+```c
+NTSTATUS WINAPI NtQueryDirectoryObject( HANDLE handle, DIRECTORY_BASIC_INFORMATION *buffer,
+                                        ULONG size, BOOLEAN single_entry, BOOLEAN restart,
+                                        ULONG *context, ULONG *ret_size )
+{
+    ULONG index = restart ? 0 : *context;
+    ...
+    *context = index + used_count;
+```
+
+A 1 KB buffer holds the 146-byte HID name with room to spare, so the 40-byte
+probe in *What the object directory actually holds* was measuring nothing that
+happens here. With `restart = 0` and `ctx = 1`, the request must carry
+`index=1`. Every request carries `index=0`. The only way to get `index=0` from
+`ctx=1` is for `restart` to be **true** — and the caller wrote a zero.
+
+It wrote one byte of zero. `mov byte [rsp+0x20], 0` sets the low byte of an
+8-byte argument slot and leaves the other seven as they were, which the Windows
+x86-64 ABI allows. From there:
+
+1. **The syscall dispatcher passes the slot whole.** `dlls/ntdll/unix/signal_x86_64.c`,
+   `__wine_syscall_dispatcher`: `movq (%r15),%r8   /* 5th argument */`. It
+   cannot do otherwise — it has no idea which arguments are narrow.
+2. **The unix side tests 32 bits of it.** `NtQueryDirectoryObject` in protium's
+   `ntdll.so` begins `testl %r8d, %r8d` (at `0x4b812`). Clang, as a SysV
+   callee, assumes the caller zero-extended a `char` to 32 bits, because clang
+   as a SysV caller always does. GCC assumes nothing and would test the byte.
+3. **The slot was dirty.** `[rsp+0x28]` read `0x000000000eb5de00` on the first
+   start and `0x000000000f34de00` on the fourth: low byte `00`, the bytes above
+   it a stale stack address left by whatever `MachineIDInfoThread` did before
+   the query (registry and `SetupAPI` enumeration, per the trace). `%r8d` is
+   therefore `0x0eb5de00`, which is true.
+
+So every iteration asks for entry 0, is given entry 0 correctly, stores `ctx =
+1` correctly, and asks for entry 0 again. `GetLogicalDrives` never returns,
+`fill_diskpartition` never fills, the WMI query never answers,
+`FillInMachineIDInfo()` never finishes, `jobmgr+0x1090` stays `10`, and
+`EConnect` returns 22 for the life of the process. The wineserver burns a core
+answering the same question 78,000 times a second per thread, which is the
+51 % that was measured.
+
+**This is why it is a race.** Nothing about it is timing; the die is the
+contents of one stack slot at the moment `GetLogicalDrives` is entered. Seven
+starts in eight it holds a stale pointer. One in eight it holds a zero, the
+walk completes, and the client connects.
+
+### Why CrossOver does not do this
+
+Same source, same unix-side compiler, same 32-bit test — CrossOver's
+`ntdll.so` has `testl %r8d, %r8d` at `0x4cd22`. The difference is one
+instruction on the PE side:
+
+| Build | `kernelbase.dll` compiled by | the `restart` store in `GetLogicalDrives` | `single_entry` |
+| --- | --- | --- | --- |
+| CrossOver 26.3 | `GCC: (GNU) 13.2.0` (string in the DLL) | `movl $0x0, 0x20(%rsp)` at `+0xbe` | `movl $0x1, %r9d` |
+| protium | `clang version 23.1.0` (llvm-mingw; string in the DLL) | `movb $0x0, 0x20(%rsp)` at `+0x8b` and `+0xef` | `movb $0x1, %r9b` |
+
+GCC writes 32 bits into the slot; the upper 32 are still stale but the callee
+never looks at them. Clang writes 8. Both are legal Windows code. Only one of
+them survives a clang-built unix side — and since Apple's clang is the only
+compiler on a Mac, every build of Wine on macOS has a clang unix side. What
+made protium special is that it is the first of these builds to use clang for
+the *PE* side too: CrossOver, Homebrew and Apple's Game Porting Toolkit formula
+all cross-compile the PE half with mingw-w64 GCC. This is a toolchain
+combination nobody had run, and the bug is in Wine's contract between its two
+halves, not in either compiler.
+
+Upstream Wine has not changed the contract: `dlls/ntdll/unix/sync.c` on
+`master` (read 2026-09-08 via the `wine-mirror/wine` copy on GitHub) declares
+`NtQueryDirectoryObject` with the same two `BOOLEAN`s and no masking.
+
+### Proof: one qword, zeroed in the running client
+
+If the diagnosis is right, the fix at runtime is to make the slot clean. On the
+fourth start (`MachineIDInfoThread` tid `0x2ac`, `rsp = 0x0f34dc18`, 9,233
+`EConnect` lines already logged), from `winedbg`:
+
+```
+thread 0x2ac
+x/2d 0x0f34dc40                  ->  255122944 0     (0x0f34de00: the dirty slot)
+set *(long long*)0x0f34dc40 = 0
+x/2d 0x0f34dc40                  ->  0 0
+```
+
+at 08:31:26. `connection_log.txt`, unedited apart from the account ID:
+
+```
+[08:31:27] CCMInterface::YieldingConnect -- calling ISteamDirectory/GetCMListForConnect/?cellid=91&qoslevel=3
+[08:31:27] GetCMListForConnect -- got 16 Netfilter CMs and 105 WebSocket CMs
+[08:31:29] [Connecting, 0, 11] [U:1:<account>] Connect() starting connection (eNetQOSLevelHigh, cmp1-fra1.steamserver.net:27023, WebSocket)
+[08:31:29] [Connecting, 0, 11] [U:1:<account>] ConnectionCompleted() (155.133.250.4:27023, WebSocket)
+```
+
+and `steamui_login.txt`:
+
+```
+[08:31:28] [ WaitingForServerResponse ] Received logon failure response
+[08:31:28] [ WaitingForServerResponse ] SetLoginState: WaitingForCredentials - Access Denied
+```
+
+One write of eight zero bytes took the client from the 22 loop to Valve's
+front door in three seconds. The thread's frame was gone when re-read
+(`[rsp]` now `0`), and the `Access Denied` is the copied-token refusal already
+documented — the rewrite of `loginusers.vdf` that follows it happened here too,
+which is why every trial restores the file first.
+
+### What this rules out, this time
+
+* **Everything in this document about Steam.** `EConnect`, the gate, the
+  sentinel, `CThread::Start`, `MachineIDInfoThread` — all correctly measured,
+  all downstream of a Wine bug. Steam is doing a WMI query.
+* **The object directory, the HID device, the dangling drives, the Windows
+  version, the credentials, the network.** Each was ruled out by experiment
+  before; now there is a reason they were all innocent.
+* **Both earlier readings.** The caller does not re-enumerate (one
+  `open_directory`, no `close_handle`), and the cursor is carried (`ctx = 1`).
+  The callee is told to ignore it.
+* **The 40-byte-buffer story.** `GetLogicalDrives` uses 1024 bytes and never
+  saw `STATUS_BUFFER_TOO_SMALL`; every reply was `0` with `count=1`.
+* **The CEF half of "may be one bug".** The webhelper's
+  `ThreadPoolForegroundWorker` is in the same loop, in the same function, for
+  the same reason. Whether that is what the GPU-process failure in
+  [`steam-rendering.md`](steam-rendering.md) was is not established, but a
+  Chromium thread-pool worker pinned at 100 % from the first seconds of every
+  run is now a known fact about the unpatched build.
+
+### What it does not rule out: the rest of the class
+
+`NtQueryDirectoryObject` is the one that was measured. The same shape — a
+`BOOLEAN` in one of the six register-passed positions of a syscall — occurs in
+25 other unix-side entry points in this tree, most of them an `alertable`:
+`NtAcceptConnectPort`, `NtAdjustGroupsToken`, `NtAdjustPrivilegesToken`,
+`NtCloseObjectAuditAlarm`, `NtCommitTransaction`, `NtContinue`,
+`NtCreateMutant`, `NtDelayExecution`, `NtDuplicateToken`,
+`NtInitiatePowerAction`, `NtOpenThreadToken`, `NtOpenThreadTokenEx`,
+`NtQueryDefaultLocale`, `NtQueryEaFile`, `NtReleaseKeyedEvent`,
+`NtRemoveIoCompletionEx`, `NtRollbackTransaction`, `NtSetDebugFilterState`,
+`NtSetDefaultLocale`, `NtSetTimer`, `NtSetTimerResolution`,
+`NtSignalAndWaitForSingleObject`, `NtWaitForDebugEvent`,
+`NtWaitForKeyedEvent`, `NtWaitForMultipleObjects`, `NtWaitForSingleObject`.
+Whether any of them bites depends on two things that vary per function: what
+clang emitted for the test on the unix side (`single_entry` in the very same
+function is compared as a byte, `cmpb $0x1, %r13b`, and so is safe by luck),
+and whether the PE caller's register or slot happened to be dirty. None of
+them has been measured. Arguments past the sixth are loaded from the stack with
+`movzbl` — `NtQueryDirectoryFile`'s `single_entry` and `restart_scan` are
+positions 9 and 11, and its unix side reads them with `movzbl 0x20(%rbp)` and
+`movzbl 0x30(%rbp)` — so file enumeration is not exposed, which is why nothing
+so basic ever broke.
+
+A rough census of how often protium's PE side does this: `movb $imm,
+0x20…0x58(%rsp)` — a byte store into an outgoing argument slot — appears 19
+times in `kernelbase.dll`, 24 in `ntdll.dll`, 3 in `user32.dll`, once in
+`kernel32.dll`. Not every one of those feeds a syscall, and not every syscall
+tests 32 bits. It is a count of opportunities, not of bugs.
+
+### The fix
+
+The honest general fix is to build the PE side with GCC, as everyone else on
+macOS does, and that is the direction `docs/wine-build.md` should take. What
+this repository carries today is narrower and verified:
+[`patches/0001-ntdll-test-only-the-byte-of-a-BOOLEAN-syscall-argument.patch`](../patches/0001-ntdll-test-only-the-byte-of-a-BOOLEAN-syscall-argument.patch)
+puts both `BOOLEAN`s of `NtQueryDirectoryObject` through an empty `asm` with
+an in/out constraint, which makes clang treat them as fresh 8-bit values:
+
+```c
+__asm__( "" : "+r" (single_entry), "+r" (restart) );
+index = restart ? 0 : *context;
+```
+
+Checked before building anything, with the same Apple clang at `-O2`: the
+function as written compiles to `testl %r8d, %r8d`; with the barrier it
+compiles to `testb %r8b, %r8b`. The recipe applies the patch before
+`configure`, and the result is installed beside the old runtime as
+`wine-11.0-cx26.3-p1` rather than over it, so the two can be A/B'd from the
+same prefix with `--runtime`.
+
+### Verified: the patched runtime clears the gate every time
+
+Built 2026-09-08 from the kept tree with llvm-mingw 20260826 (clang 23.1.0)
+for the PE side and Apple clang 21.0.0 for the unix side, `make` exit 0,
+installed as `wine-11.0-cx26.3-p1` with the same D3DMetal 4.0b2 merged in
+(`protium redist` on the result reports it) and `wine.inf` byte-identical to
+the first runtime's. In the installed `ntdll.so`, `NtQueryDirectoryObject`
+now begins `testb %r8b, %r8b`; `kernelbase.dll` still has its four byte
+stores, as it should — the PE side was not the thing to change. `protium run
+--runtime wine-11.0-cx26.3-p1 cmd /c ver` answers `10.0.22000` and leaves
+`.update-timestamp` alone.
+
+Then the same trial as every other start in this document — `loginusers.vdf`
+restored from the bottle, `steam.exe -noreactlogin -noverifyfiles
+-norepairfiles`, online — three times on the patched runtime, against the
+three starts on the unpatched one the same morning:
+
+| Runtime | Starts | `Schedule init returned` | `EConnect … 50ms` lines | Thread above 20 % CPU |
+| --- | --- | --- | --- | --- |
+| `wine-11.0-cx26.3` | 3 (08:10, 08:20, 08:30) | `22`, `22`, `22` | 127+, 8,000+, 9,233 | `MachineIDInfoThread`, every time |
+| `wine-11.0-cx26.3-p1` | 3 (08:54:18, 08:54:50, 08:55:15) | **`1`, `1`, `1`** | **0, 0, 0** | none |
+
+Each of the three reached `LogOn()` within 9–18 seconds of launch,
+`CCMInterface::YieldingConnect` and `GetCMListForConnect` in the same second,
+and `Connect() starting connection (… WebSocket)` right after. On the third,
+the first WebSocket attempt came back `ConnectFailed('Connection Failed':0)`
+and the client scheduled `StartAutoReconnect() … in 12.0 seconds`, which the
+trial's twelve-second window did not cover; that is the network being the
+network, on the far side of the gate this document is about. Nothing on the
+patched runtime ever printed `Schedule init returned 22`, and no thread was
+hot.
+
+What the patched runtime still cannot do is sign this prefix in: the copied
+token is refused, as [(b)](#b-does-it-reach-logged-on-no--and-the-reason-is-not-wine)
+records, so `Logged On` needs a password and Steam Guard typed into the
+client. The login page renders, the gate is open, and that is the one step
+left.

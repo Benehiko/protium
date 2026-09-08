@@ -165,3 +165,15 @@ the same signature the client wrote under CrossOver when it worked.
 Signing in is a different problem with a different answer, in
 [`steam-login.md`](steam-login.md). The command that applies the workaround is
 described in [`install.md`](install.md).
+
+One thing found on 2026-09-08 while chasing that other problem belongs here
+too. A nine-second `WINEDEBUG=+server` trace of an unpatched client shows a
+`steamwebhelper.exe` thread named `ThreadPoolForegroundWorker` (Wine thread
+`0180`, process `0148`) making 713,937 `get_directory_entries` requests for
+entry 0 of `\DosDevices`, after two `open_directory` calls and no
+`close_handle` — the same never-returning `GetLogicalDrives` that pins Steam's
+`MachineIDInfoThread`, for the same reason, a Wine `BOOLEAN` argument read as
+32 bits. So on the unpatched runtime a Chromium thread-pool worker is at 100 %
+from the first seconds of every run. Whether that had anything to do with the
+GPU process dying is not established; the rendering fix above was measured
+against that background and works regardless.

@@ -1,0 +1,35 @@
+ntdll: Test only the byte of NtQueryDirectoryObject's BOOLEAN arguments.
+
+A PE caller built with clang sets a BOOLEAN stack argument with a byte store
+and leaves the other seven bytes of the slot as it found them, which the
+Windows x86-64 ABI permits (GCC happens to write 32 bits). Wine's syscall
+dispatcher copies the slot whole into the SysV argument register, and a unix
+side built with clang then tests the low 32 bits, because clang as a SysV
+callee assumes the caller zero-extended a char. With stale bytes above the
+BOOLEAN, `restart` reads as TRUE on every call, the cursor never advances, and
+GetLogicalDrives() re-reads entry 0 of \DosDevices forever. Measured on
+Steam's MachineIDInfoThread and on steamwebhelper's ThreadPoolForegroundWorker
+against Wine 11.0 from crossover-sources-26.3.0; see docs/steam-login.md.
+
+An empty asm with the argument as an in/out operand makes the compiler treat
+it as a fresh 8-bit value, so it tests the byte and nothing above it.
+
+--- a/dlls/ntdll/unix/sync.c
++++ b/dlls/ntdll/unix/sync.c
+@@ -2081,9 +2081,15 @@
+                                         ULONG *context, ULONG *ret_size )
+ {
+     unsigned int status, i, count, total_len, pos, used_size, used_count, strpool_head;
+-    ULONG index = restart ? 0 : *context;
++    ULONG index;
+     struct directory_entry *entries;
++
++    /* A PE caller may set a BOOLEAN with a byte store and leave the rest of the
++     * slot stale; the dispatcher passes the slot as is, and a clang-built callee
++     * would test 32 bits of it. Look at the byte only. */
++    __asm__( "" : "+r" (single_entry), "+r" (restart) );
+ 
++    index = restart ? 0 : *context;
+     if (!(entries = malloc( size ))) return STATUS_NO_MEMORY;
+ 
+     SERVER_START_REQ( get_directory_entries )

@@ -120,9 +120,12 @@ protium run "C:\Program Files (x86)\Steam\steam.exe" \
 
 ### Every launch after that, offline
 
-Online sign-in is broken here — it fails inside one call, and
-[docs/steam-login.md](docs/steam-login.md) names it. Offline mode sidesteps it
-entirely, and a game needs nothing more.
+Online sign-in fails on a Wine built by the recipe as first written — seven
+starts in eight, inside one call — and [docs/steam-login.md](docs/steam-login.md)
+traces that to a Wine bug in how its PE and unix halves pass a `BOOLEAN`,
+which `patches/` now fixes: a runtime built with the patch cleared the gate on
+three starts of three. Offline mode sidesteps the whole question, and a game
+needs nothing more.
 
 Add these to your account's block in
 `<prefix>/drive_c/Program Files (x86)/Steam/config/loginusers.vdf`:
@@ -215,8 +218,11 @@ Early, and honest about which is which.
   protium-built Wine with no CrossOver runtime involved: save loaded, world
   rendering, character responding to input.
 * **Working with a workaround** — signing the Windows Steam client in. Online
-  fails inside `CCMInterface::LogOn()`; offline mode plus `-noreactlogin`
-  works. Both in [docs/steam-login.md](docs/steam-login.md).
+  fails inside `CCMInterface::LogOn()` on an unpatched build, because Wine's
+  `GetLogicalDrives` never returns when the PE side is clang-built; the root
+  cause is measured, proven live, and patched in `patches/`, and a runtime
+  built with it reaches Valve's servers. Offline mode plus `-noreactlogin`
+  works on either. All in [docs/steam-login.md](docs/steam-login.md).
 * **Working** — `protium install`. It fetches from the publisher, prints the
   size and SHA-256 of what arrived, configures the prefix, runs the installer,
   applies the fixes a program needs here, and refuses when it can see the

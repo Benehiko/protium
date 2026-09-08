@@ -209,12 +209,18 @@ pub const apps = [_]App{
         \\lines at all, which is what the same client wrote under CrossOver
         \\when it worked.
         \\
-        \\Signing in ONLINE still does not work. Seven starts in eight never
-        \\get past `Schedule init returned 22` in logs/connection_log.txt, and
-        \\the one that connected was refused by Valve for using a credential
-        \\copied from another prefix. Offline mode is the route that works, and
-        \\it needs the account's appcache/ copied in as well as its credential
-        \\(docs/steam-login.md).
+        \\Signing in ONLINE depends on which runtime. On a Wine built without
+        \\patches/0001, seven starts in eight never get past `Schedule init
+        \\returned 22` in logs/connection_log.txt: Wine's own GetLogicalDrives
+        \\never returns, because the clang-built PE side stores a BOOLEAN
+        \\argument as one byte and the clang-built unix side reads 32 bits of
+        \\it. Traced, proven by zeroing the stack slot in the running client,
+        \\and patched on 2026-09-08; a runtime built with the patch
+        \\(wine-11.0-cx26.3-p1) returned 1 and connected on three starts of
+        \\three. The credential copied from another prefix is still refused
+        \\by Valve, so a real sign-in needs the password typed in. Offline
+        \\mode works on either runtime and needs the account's appcache/
+        \\copied in as well as its credential (docs/steam-login.md).
         ,
         .notes =
         \\Sign in online once so credentials and licences cache, then switch to
