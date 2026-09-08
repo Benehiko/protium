@@ -27,6 +27,7 @@ const pe = @import("pe.zig");
 const teardown = @import("teardown.zig");
 const removal = @import("removal.zig");
 const profile = @import("profile.zig");
+const recipe = @import("recipe.zig");
 
 /// The stand-in `steamwebhelper.exe`, built for x86_64-windows from
 /// `src/webhelper.zig` by this repository's own `build.zig` and embedded here.
@@ -43,6 +44,7 @@ const usage =
     \\
     \\Setting up:
     \\  protium doctor              Check this host against what building Wine needs.
+    \\  protium build               Build Wine from CodeWeavers' sources and install it.
     \\  protium status              Where the installation is, and the next step.
     \\  protium shell-init          Print the line that makes prefixes automatic.
     \\
@@ -73,6 +75,7 @@ const usage =
     \\  --runtime <name>  Use this Wine instead of the default.
     \\  --shell <name>    fish, zsh, bash or posix. Defaults to $SHELL.
     \\  --force           install: run the installer even if it is already there.
+    \\                    prefix new: answer the offer to build Wine with yes.
     \\                    prefix stop: skip the polite request and signal at once.
     \\                    prefix remove, install clean: delete without asking
     \\                    first. It never deletes anything the question would
@@ -117,6 +120,7 @@ fn dispatch(
     w: *Io.Writer,
 ) !u8 {
     if (std.mem.eql(u8, cmd, "doctor")) return runDoctor(io, vars, w);
+    if (std.mem.eql(u8, cmd, "build")) return runBuild(arena, io, vars, rest, w);
     if (std.mem.eql(u8, cmd, "redist")) return runRedist(gpa, io, rest, w);
     if (std.mem.eql(u8, cmd, "status")) return runStatus(arena, io, vars, rest, w);
     if (std.mem.eql(u8, cmd, "env")) return runEnv(arena, io, vars, rest, w);
@@ -279,6 +283,9 @@ fn reportUnresolved(
     switch (err) {
         error.None => {
             try w.print("protium: no {s} installed under {s}/{s}\n", .{ noun, sess.root, sub });
+            if (std.mem.eql(u8, noun, "runtime")) {
+                try w.writeAll("Build one with `protium build`, which fetches CodeWeavers' sources.\n");
+            }
             try w.writeAll("Run `protium status` for the next step.\n");
         },
         error.Ambiguous => {
@@ -650,9 +657,26 @@ fn prefixNew(
 
     // A prefix is only useful with a Wine to boot it, so resolve that first
     // and say so plainly rather than failing inside wineboot.
-    const rt = sess.runtime(opts.runtime) catch |err| {
-        try reportUnresolved(sess, w, layout.runtimes, "runtime", opts.runtime, err);
-        return 1;
+    //
+    // With no runtime installed at all, the honest answer is not a complaint:
+    // it is the build, offered here rather than left as a document to go away
+    // and read. It is offered rather than started, because it fetches 260 MB
+    // and runs for six minutes, and `prefix new` does not read like a command
+    // that does either.
+    const rt = sess.runtime(opts.runtime) catch |err| blk: {
+        if (err != error.None or opts.runtime != null) {
+            try reportUnresolved(sess, w, layout.runtimes, "runtime", opts.runtime, err);
+            return 1;
+        }
+        try w.print(
+            "There is no Wine under {s}/{s}, and a prefix cannot be created without one.\n\n",
+            .{ sess.root, layout.runtimes },
+        );
+        if (try buildWine(arena, io, vars, sess, w, !opts.force) != 0) return 1;
+        break :blk sess.runtime(opts.runtime) catch |again| {
+            try reportUnresolved(sess, w, layout.runtimes, "runtime", opts.runtime, again);
+            return 1;
+        };
     };
     const loader = try sess.join(&.{ rt.dir, layout.wine_loader });
     if (!sess.exists(loader)) {
@@ -1132,7 +1156,7 @@ fn prefixRemove(
     if (!opts.force) {
         var question: [256]u8 = undefined;
         const prompt = std.fmt.bufPrint(&question, "Delete the prefix {s}?", .{name}) catch "Delete it?";
-        if (!try confirm(io, w, prompt)) {
+        if (!try confirm(io, w, prompt, "Pass --force to delete without the question.")) {
             try w.writeAll("Nothing was deleted.\n");
             return 1;
         }
@@ -1235,7 +1259,7 @@ fn prefixMigrateUser(
     try w.writeAll("and move with the profile.\n\n");
 
     if (!opts.force) {
-        if (!try confirm(io, w, "Migrate this prefix?")) {
+        if (!try confirm(io, w, "Migrate this prefix?", "Pass --force to migrate without the question.")) {
             try w.writeAll("Nothing was changed.\n");
             return 1;
         }
@@ -1450,17 +1474,22 @@ fn describeTree(w: *Io.Writer, what: []const u8, dir: []const u8, m: Measure) !u
     return 0;
 }
 
-/// Ask before deleting.
+/// Ask before doing something that cannot be taken back cheaply.
 ///
 /// Only `--force` skips this. A pipe with nothing behind it is refused rather
 /// than answered, because the alternative — reading end-of-input as `no` — is
 /// indistinguishable from a script that meant to say `yes` and forgot the
 /// flag, and one of those two readings deletes a prefix.
-fn confirm(io: Io, w: *Io.Writer, prompt: []const u8) !bool {
+///
+/// `hint` is what to say to whoever is on the other end of that pipe. It
+/// differs by question: `--force` deletes without asking in one place and
+/// starts a six-minute build in another, and a message that says "delete"
+/// where nothing is deleted is worse than no message.
+fn confirm(io: Io, w: *Io.Writer, prompt: []const u8, hint: []const u8) !bool {
     const in = Io.File.stdin();
     if (!(in.isTty(io) catch false)) {
         try w.writeAll("Standard input is not a terminal, so there is nobody to ask.\n");
-        try w.writeAll("Pass --force to delete without the question.\n");
+        try w.print("{s}\n", .{hint});
         return false;
     }
 
@@ -1601,12 +1630,621 @@ fn runLaunch(
 /// reported the way a shell reports one, so `protium run` and `wine` are
 /// indistinguishable to whatever called them.
 fn spawnWait(io: Io, vars: *std.process.Environ.Map, argv: []const []const u8) !u8 {
-    var child = try std.process.spawn(io, .{ .argv = argv, .environ_map = vars });
+    return spawnAt(io, vars, .inherit, argv);
+}
+
+/// The same, in a directory of our choosing. The Wine build is a sequence of
+/// `configure` and `make` runs that each belong in a particular directory, and
+/// changing this process's own working directory to get there would be a
+/// change every later step would have to remember.
+fn spawnAt(
+    io: Io,
+    vars: *std.process.Environ.Map,
+    cwd: std.process.Child.Cwd,
+    argv: []const []const u8,
+) !u8 {
+    return spawnAsking(io, vars, cwd, argv, false);
+}
+
+/// The same again, with the program's own output thrown away and only its exit
+/// status kept.
+///
+/// This is for asking a question rather than doing a thing: `patch -C` reports
+/// that a patch does not apply by printing `1 out of 1 hunks failed`, which is
+/// the correct answer to "is this already in the tree?" and reads, in the
+/// middle of a build log, exactly like a build that has just gone wrong.
+fn spawnQuietly(
+    io: Io,
+    vars: *std.process.Environ.Map,
+    cwd: std.process.Child.Cwd,
+    argv: []const []const u8,
+) !u8 {
+    return spawnAsking(io, vars, cwd, argv, true);
+}
+
+fn spawnAsking(
+    io: Io,
+    vars: *std.process.Environ.Map,
+    cwd: std.process.Child.Cwd,
+    argv: []const []const u8,
+    quiet: bool,
+) !u8 {
+    var child = try std.process.spawn(io, .{
+        .argv = argv,
+        .environ_map = vars,
+        .cwd = cwd,
+        .stdout = if (quiet) .ignore else .inherit,
+        .stderr = if (quiet) .ignore else .inherit,
+    });
     return switch (try child.wait(io)) {
         .exited => |c| c,
         .signal => |s| 128 +| @as(u8, @truncate(@intFromEnum(s))),
         .stopped, .unknown => 1,
     };
+}
+
+// ---------------------------------------------------------------------------
+// build
+
+/// `protium build` — carry out docs/wine-build.md.
+///
+/// Typing the command is the consent, so this does not ask. `prefix new` does,
+/// because there the build is the answer to a question about something else.
+fn runBuild(
+    arena: std.mem.Allocator,
+    io: Io,
+    vars: *std.process.Environ.Map,
+    args: []const []const u8,
+    w: *Io.Writer,
+) !u8 {
+    const opts = try parseOptions(arena, args, false);
+    if (opts.bad) |b| return reportBadOption(w, "build", b);
+
+    const sess = session.Session.open(arena, io, vars) catch |err| switch (err) {
+        error.NoHome => {
+            try w.writeAll("protium: no HOME, and no PROTIUM_HOME to use instead\n");
+            return 1;
+        },
+        else => |e| return e,
+    };
+    return buildWine(arena, io, vars, sess, w, false);
+}
+
+/// The programs the build shells out to. All of them come with Xcode's command
+/// line tools, and all of them are named by absolute path: llvm-mingw's `bin/`
+/// goes on `PATH` ahead of everything else while the build runs, and the
+/// `clang` in it targets Windows.
+const host_tools = [_][]const u8{
+    "/usr/bin/clang",
+    "/usr/bin/make",
+    "/usr/bin/tar",
+    "/usr/bin/patch",
+    "/usr/bin/install_name_tool",
+    "/usr/bin/touch",
+    "/usr/bin/cmp",
+};
+
+/// Build Wine from CodeWeavers' published sources and install it as a runtime.
+///
+/// Every step decides for itself whether it has already been done, and it
+/// decides by a file the step itself produces rather than by a marker protium
+/// wrote: an interrupted build is resumed by running the command again, and a
+/// build directory somebody made by following docs/wine-build.md by hand is
+/// picked up rather than redone. Whether a patch is already in the tree is
+/// asked of `patch -C` for the same reason — see `applyPatches`.
+fn buildWine(
+    arena: std.mem.Allocator,
+    io: Io,
+    vars: *std.process.Environ.Map,
+    sess: session.Session,
+    w: *Io.Writer,
+    ask: bool,
+) !u8 {
+    if (!layout.rootIsUsable(sess.root)) {
+        try w.print("protium: {s} contains a space, which Wine's own tooling cannot handle.\n", .{sess.root});
+        try w.writeAll("Set PROTIUM_HOME to a path without one. See docs/wine-build.md.\n");
+        return 1;
+    }
+
+    const build_root = try sess.join(&.{ sess.root, layout.build_dir });
+    const paths: recipe.Paths = .{
+        .build = build_root,
+        .wine = try sess.join(&.{ build_root, "wine" }),
+        .out = try sess.join(&.{ build_root, recipe.build_subdir }),
+        .tools = try sess.join(&.{ build_root, "tools" }),
+        .mingw = try sess.join(&.{ build_root, "llvm-mingw" }),
+        .deps = try sess.join(&.{ sess.root, layout.deps_dir }),
+        .install = try sess.join(&.{ sess.root, layout.runtimes, recipe.runtime_name }),
+    };
+
+    if (try checkHostTools(io, w) != 0) return 1;
+    if (try checkDeps(io, sess, paths, w) != 0) return 1;
+
+    try describeBuild(w, paths);
+    if (ask) {
+        if (!try confirm(io, w, "Build it now?", "Pass --force to build without the question, or run `protium build`.")) {
+            try w.writeAll("\nNothing was fetched. `protium build` starts it whenever you like.\n");
+            return 1;
+        }
+    }
+
+    // The build's own PATH, put back afterwards: the tools directory belongs
+    // to the build and has no business in the environment a prefix is later
+    // booted with.
+    const inherited_path = if (vars.get("PATH")) |p| try arena.dupe(u8, p) else null;
+    try vars.put("PATH", try recipe.buildPath(arena, paths, inherited_path));
+    defer if (inherited_path) |p| vars.put("PATH", p) catch {};
+
+    try Io.Dir.cwd().createDirPath(io, build_root);
+
+    if (try buildBison(arena, io, vars, sess, paths, w) != 0) return 1;
+    if (try unpackMingw(arena, io, vars, sess, paths, w) != 0) return 1;
+    if (try extractWine(arena, io, vars, sess, paths, w) != 0) return 1;
+    if (try applyPatches(io, vars, sess, paths, w) != 0) return 1;
+    if (try configureWine(arena, io, vars, sess, paths, w) != 0) return 1;
+    if (try makeWine(arena, io, vars, paths, w) != 0) return 1;
+    if (try installWine(io, vars, sess, paths, w) != 0) return 1;
+    if (try bundleLibraries(arena, io, vars, sess, paths, w) != 0) return 1;
+    try carryWineInfTime(io, vars, sess, paths, w);
+
+    try reportBuilt(w, paths);
+    return 0;
+}
+
+/// What the build is about to do, before it does any of it.
+fn describeBuild(w: *Io.Writer, paths: recipe.Paths) !void {
+    try w.print(
+        \\protium build
+        \\
+        \\This builds Wine from CodeWeavers' published CrossOver {s} sources and
+        \\installs it as the runtime {s}.
+        \\
+        \\  fetch     about 260 MB — the sources, llvm-mingw and bison
+        \\  build     six minutes on an M4, downloads included, and the whole
+        \\            tree is x86-64
+        \\  disk      1.1 GB for the runtime, and about 4 GB for the build tree,
+        \\            which is kept afterwards as the evidence for what was built:
+        \\              {s}
+        \\  patches   applied to the tree before configure:
+        \\
+    , .{ recipe.crossover_version, recipe.runtime_name, paths.build });
+    for (recipe.patches) |p| {
+        try w.print("              {s}\n                {s}\n", .{ p.name, p.why });
+    }
+    try w.writeAll(
+        \\
+        \\D3DMetal is not part of this and cannot be: it comes from Apple's Game
+        \\Porting Toolkit DMG, which needs an Apple developer sign-in. The Wine this
+        \\produces runs `protium run cmd /c ver`; a game needs `protium redist`
+        \\afterwards, which this prints again when it finishes.
+        \\
+        \\The whole recipe, with the evidence behind each step, is docs/wine-build.md.
+        \\
+        \\
+    );
+}
+
+/// Xcode's command line tools, checked before 260 MB is downloaded rather than
+/// after.
+fn checkHostTools(io: Io, w: *Io.Writer) !u8 {
+    var missing = false;
+    for (host_tools) |tool| {
+        if (exists(io, tool)) continue;
+        if (!missing) try w.writeAll("protium build: this host is missing what the build runs.\n\n");
+        missing = true;
+        try w.print("  {s}\n", .{tool});
+    }
+    if (!missing) return 0;
+    try w.writeAll("\nAll of them come with Xcode's command line tools:\n\n  xcode-select --install\n");
+    return 1;
+}
+
+/// The x86-64 libraries the build links against, which protium does not build.
+fn checkDeps(
+    io: Io,
+    sess: session.Session,
+    paths: recipe.Paths,
+    w: *Io.Writer,
+) !u8 {
+    var missing = false;
+    for (recipe.deps) |d| {
+        if (exists(io, try sess.join(&.{ paths.deps, d.path }))) continue;
+        if (!missing) {
+            try w.print("protium build: {s} does not have what Wine links against.\n\n", .{paths.deps});
+        }
+        missing = true;
+        try w.print("  {s}\n      {s}\n", .{ d.path, d.why });
+    }
+    if (!missing) return 0;
+    try w.writeAll(
+        \\
+        \\These are x86-64 builds of FreeType, GnuTLS, nettle, hogweed and GMP, built
+        \\shared, with the headers beside them. protium does not build them: the
+        \\recipe records that they exist and what they are for, but not the configure
+        \\line that produced them, and a command nobody has written down is not one
+        \\this program should run for the first time in the middle of a build.
+        \\
+        \\Build them into that directory by hand, then run this again:
+        \\
+        \\  docs/wine-build.md#toolchain
+        \\
+        \\Without FreeType, Wine has no font rasteriser and every Win32 window paints
+        \\blank. Without GnuTLS, it has no TLS at all, and a program with an encrypted
+        \\socket to open — Steam's sign-in among them — simply cannot open one.
+        \\
+    );
+    return 1;
+}
+
+/// Fetch one of the recipe's sources into the build directory, reporting what
+/// arrived by the same standard `install` holds a download to.
+fn fetchSource(
+    arena: std.mem.Allocator,
+    io: Io,
+    sess: session.Session,
+    paths: recipe.Paths,
+    src: recipe.Source,
+    w: *Io.Writer,
+) ![]const u8 {
+    const dest = try sess.join(&.{ paths.build, src.archive });
+    try w.print("Fetching {s}\n", .{src.url});
+    try w.flush();
+
+    const report = fetch.download(arena, io, src.url, dest, false) catch |err| {
+        try w.print("\nprotium build: the download failed — {s}\n", .{@errorName(err)});
+        return err;
+    };
+    var size_buf: [64]u8 = undefined;
+    var hex_buf: [64]u8 = undefined;
+    try w.print("  {s}{s}\n", .{ dest, if (report.reused) "  (already downloaded)" else "" });
+    try w.print("  {s}\n", .{fetch.size(&size_buf, report.bytes)});
+    try w.print("  sha256 {s}\n\n", .{report.hex(&hex_buf)});
+    try w.flush();
+    return dest;
+}
+
+/// A heading, so that several minutes of compiler output stays readable.
+fn buildStep(w: *Io.Writer, comptime fmt: []const u8, args: anytype) !void {
+    try w.writeAll("\n==> ");
+    try w.print(fmt, args);
+    try w.writeAll("\n\n");
+    try w.flush();
+}
+
+/// bison 3.8.2, built into the build directory. Nothing is installed onto the
+/// host: Xcode's bison is 2.3, and Wine's configure rejects it by name.
+fn buildBison(
+    arena: std.mem.Allocator,
+    io: Io,
+    vars: *std.process.Environ.Map,
+    sess: session.Session,
+    paths: recipe.Paths,
+    w: *Io.Writer,
+) !u8 {
+    const built = try sess.join(&.{ paths.tools, "bin", "bison" });
+    if (sess.exists(built)) return 0;
+
+    try buildStep(w, "bison {s} — {s}", .{ recipe.bison_source.version, recipe.bison_source.why });
+    const archive = try fetchSource(arena, io, sess, paths, recipe.bison_source, w);
+
+    const tree = try sess.join(&.{ paths.build, stem(recipe.bison_source.archive) });
+    if (!sess.exists(try sess.join(&.{ tree, "configure" }))) {
+        if (try spawnAt(io, vars, .{ .path = paths.build }, &.{ "/usr/bin/tar", "-xJf", archive }) != 0) {
+            try w.writeAll("\nprotium build: bison's archive did not unpack.\n");
+            return 1;
+        }
+    }
+    const prefix_arg = try std.fmt.allocPrint(arena, "--prefix={s}", .{paths.tools});
+    if (try spawnAt(io, vars, .{ .path = tree }, &.{ "./configure", prefix_arg }) != 0) return buildFailed(w, "bison's configure");
+    if (try spawnAt(io, vars, .{ .path = tree }, &.{ "/usr/bin/make", try jobs(arena) }) != 0) return buildFailed(w, "bison");
+    if (try spawnAt(io, vars, .{ .path = tree }, &.{ "/usr/bin/make", "install" }) != 0) return buildFailed(w, "bison's install");
+    return 0;
+}
+
+/// llvm-mingw, unpacked. It is a release binary rather than a build: a
+/// mingw-w64 toolchain for a macOS host is not something to compile here.
+fn unpackMingw(
+    arena: std.mem.Allocator,
+    io: Io,
+    vars: *std.process.Environ.Map,
+    sess: session.Session,
+    paths: recipe.Paths,
+    w: *Io.Writer,
+) !u8 {
+    if (sess.exists(try sess.join(&.{ paths.mingw, "bin", "x86_64-w64-mingw32-clang" }))) return 0;
+
+    try buildStep(w, "llvm-mingw {s} — {s}", .{ recipe.mingw_source.version, recipe.mingw_source.why });
+    const archive = try fetchSource(arena, io, sess, paths, recipe.mingw_source, w);
+
+    try Io.Dir.cwd().createDirPath(io, paths.mingw);
+    // --strip-components=1 because the tarball's top directory carries the
+    // release date, and the rest of the recipe refers to `llvm-mingw`.
+    const code = try spawnAt(io, vars, .{ .path = paths.build }, &.{
+        "/usr/bin/tar", "-xJf", archive, "-C", paths.mingw, "--strip-components=1",
+    });
+    if (code != 0) return buildFailed(w, "unpacking llvm-mingw");
+    return 0;
+}
+
+/// The Wine tree, extracted from CrossOver's source tarball.
+fn extractWine(
+    arena: std.mem.Allocator,
+    io: Io,
+    vars: *std.process.Environ.Map,
+    sess: session.Session,
+    paths: recipe.Paths,
+    w: *Io.Writer,
+) !u8 {
+    if (sess.exists(try sess.join(&.{ paths.wine, "VERSION" }))) return 0;
+
+    try buildStep(w, "CrossOver {s} sources — {s}", .{ recipe.wine_source.version, recipe.wine_source.why });
+    const archive = try fetchSource(arena, io, sess, paths, recipe.wine_source, w);
+
+    try w.writeAll("Extracting sources/wine, which is the only part of the tarball this uses.\n");
+    try w.flush();
+    const code = try spawnAt(io, vars, .{ .path = paths.build }, &.{
+        "/usr/bin/tar", "-xzf", archive, "--include=sources/wine/*", "--strip-components=1",
+    });
+    if (code != 0) return buildFailed(w, "extracting the Wine tree");
+
+    const version = Io.Dir.cwd().readFileAlloc(io, try sess.join(&.{ paths.wine, "VERSION" }), arena, .limited(256)) catch {
+        try w.print("\nprotium build: the tarball unpacked but {s}/VERSION is not there.\n", .{paths.wine});
+        return 1;
+    };
+    try w.print("  {s}\n", .{std.mem.trim(u8, version, " \t\r\n")});
+    return 0;
+}
+
+/// Apply the recipe's patches, once.
+///
+/// Whether a patch is already in is asked of the tree rather than of a note
+/// protium kept: `patch -C` checks without changing anything, and a patch that
+/// reverses cleanly is one that has already been applied. That is what makes
+/// a tree somebody patched by hand — following docs/wine-build.md, as the
+/// first of these builds was — picked up rather than refused, and it is the
+/// same standard the rest of this build holds itself to.
+///
+/// `-f` on every call: patch's questions are addressed to a person at a
+/// terminal, and this one has a build's output in front of it.
+fn applyPatches(
+    io: Io,
+    vars: *std.process.Environ.Map,
+    sess: session.Session,
+    paths: recipe.Paths,
+    w: *Io.Writer,
+) !u8 {
+    const wine: std.process.Child.Cwd = .{ .path = paths.wine };
+    for (recipe.patches) |p| {
+        const file = try sess.join(&.{ paths.build, p.name });
+        try Io.Dir.cwd().writeFile(io, .{ .sub_path = file, .data = p.text });
+
+        if (try spawnQuietly(io, vars, wine, &.{ "/usr/bin/patch", "-p1", "-R", "-C", "-f", "-i", file }) == 0) {
+            try w.print("  {s} is already in the tree\n", .{p.name});
+            try w.flush();
+            continue;
+        }
+        try buildStep(w, "patch {s}\n    {s}", .{ p.name, p.why });
+        if (try spawnQuietly(io, vars, wine, &.{ "/usr/bin/patch", "-p1", "-C", "-f", "-i", file }) != 0) {
+            try w.print("\nprotium build: {s} does not apply to the tree in {s}.\n", .{ p.name, paths.wine });
+            try w.writeAll("Nothing was changed. Delete the tree and run this again to extract it afresh.\n");
+            return 1;
+        }
+        if (try spawnAt(io, vars, wine, &.{ "/usr/bin/patch", "-p1", "-f", "-i", file }) != 0) {
+            try w.print("\nprotium build: {s} checked out and then failed to apply.\n", .{p.name});
+            try w.print("The tree may be half-patched; delete {s} and run this again.\n", .{paths.wine});
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/// configure, out of tree, and then the one thing configure cannot produce.
+fn configureWine(
+    arena: std.mem.Allocator,
+    io: Io,
+    vars: *std.process.Environ.Map,
+    sess: session.Session,
+    paths: recipe.Paths,
+    w: *Io.Writer,
+) !u8 {
+    const config_h = try sess.join(&.{ paths.out, "include", "config.h" });
+
+    if (!sess.exists(try sess.join(&.{ paths.out, "Makefile" }))) {
+        try buildStep(w, "configure — into {s}", .{paths.out});
+        try Io.Dir.cwd().createDirPath(io, paths.out);
+        const argv = try recipe.configureArgv(arena, paths);
+        if (try spawnAt(io, vars, .{ .path = paths.out }, argv) != 0) return buildFailed(w, "configure");
+    }
+
+    // `dlls/win32u/vulkan.c` refers to SONAME_LIBVULKAN behind no #ifdef, so
+    // the tree does not compile without it. Judged by the #define: configure
+    // leaves `/* #undef SONAME_LIBVULKAN */` behind, and a check for the bare
+    // name is true before anything has been added.
+    const text = Io.Dir.cwd().readFileAlloc(io, config_h, arena, .limited(1 << 20)) catch {
+        try w.print("\nprotium build: configure left no {s}.\n", .{config_h});
+        return 1;
+    };
+    if (!recipe.hasVulkanSoname(text)) {
+        try buildStep(w, "adding SONAME_LIBVULKAN to config.h — the tree does not compile without it", .{});
+        try Io.Dir.cwd().writeFile(io, .{
+            .sub_path = config_h,
+            .data = try recipe.withVulkanSoname(arena, text),
+        });
+    }
+    return 0;
+}
+
+fn makeWine(
+    arena: std.mem.Allocator,
+    io: Io,
+    vars: *std.process.Environ.Map,
+    paths: recipe.Paths,
+    w: *Io.Writer,
+) !u8 {
+    try buildStep(w, "make — roughly four minutes, and it prints a great deal", .{});
+    // Deliberately unconditional: make decides for itself what is already
+    // built, which is a better answer than any marker protium could keep.
+    if (try spawnAt(io, vars, .{ .path = paths.out }, &.{ "/usr/bin/make", try jobs(arena) }) != 0) {
+        return buildFailed(w, "make");
+    }
+    return 0;
+}
+
+/// Where `installWine` puts the `wine.inf` it is about to overwrite, so that
+/// `carryWineInfTime` can compare against it. A build run twice — resumed, or
+/// simply repeated — installs over its own runtime, and the second install
+/// gives an identical file a fresh modification time, which every prefix that
+/// runtime has booted then answers with several minutes of `wineboot
+/// --update`. Keeping the old file is what makes that avoidable.
+const previous_wine_inf = "wine.inf.previous";
+
+fn installWine(
+    io: Io,
+    vars: *std.process.Environ.Map,
+    sess: session.Session,
+    paths: recipe.Paths,
+    w: *Io.Writer,
+) !u8 {
+    const mine = try sess.join(&.{ paths.install, layout.wine_inf });
+    const saved = try sess.join(&.{ paths.build, previous_wine_inf });
+    if (sess.exists(mine)) {
+        copyFile(io, mine, saved) catch {};
+        // The copy is what carries the time, and a copy is made now rather
+        // than when the file was installed, so it has to be given the time it
+        // is standing in for. Without this the time carried over is the time
+        // of this build, which is the thing being avoided.
+        if (sess.exists(saved)) _ = try spawnWait(io, vars, &.{ "/usr/bin/touch", "-r", mine, saved });
+    }
+
+    try buildStep(w, "make install — into {s}", .{paths.install});
+    if (try spawnAt(io, vars, .{ .path = paths.out }, &.{ "/usr/bin/make", "install" }) != 0) {
+        return buildFailed(w, "make install");
+    }
+    if (!sess.exists(try sess.join(&.{ paths.install, layout.wine_loader }))) {
+        try w.print("\nprotium build: make install finished but wrote no {s}.\n", .{layout.wine_loader});
+        return 1;
+    }
+    return 0;
+}
+
+/// Copy the five dylibs into the runtime and make them stand on their own.
+///
+/// Wine `dlopen`s FreeType and GnuTLS by bare soname, and protium puts a
+/// runtime's `lib/` on `DYLD_FALLBACK_LIBRARY_PATH` for every launch, so this
+/// is what turns two sonames recorded in `config.h` into a runtime that
+/// actually has fonts and TLS.
+fn bundleLibraries(
+    arena: std.mem.Allocator,
+    io: Io,
+    vars: *std.process.Environ.Map,
+    sess: session.Session,
+    paths: recipe.Paths,
+    w: *Io.Writer,
+) !u8 {
+    try buildStep(w, "copying FreeType and GnuTLS into the runtime", .{});
+    const deps_lib = try sess.join(&.{ paths.deps, "lib" });
+    const install_lib = try sess.join(&.{ paths.install, layout.lib_dir });
+
+    for (recipe.bundled) |lib| {
+        const from = try sess.join(&.{ deps_lib, lib });
+        const to = try sess.join(&.{ install_lib, lib });
+        copyFile(io, from, to) catch |err| {
+            try w.print("protium build: could not copy {s} — {s}\n", .{ from, @errorName(err) });
+            return 1;
+        };
+        const argv = try recipe.installNameArgv(arena, deps_lib, lib, to);
+        if (try spawnWait(io, vars, argv) != 0) {
+            try w.print("protium build: install_name_tool refused {s}.\n", .{to});
+            return 1;
+        }
+        try w.print("  {s}\n", .{to});
+    }
+    return 0;
+}
+
+/// Give the new `wine.inf` the modification time of an older runtime's, when
+/// the two are byte-identical.
+///
+/// A prefix records the mtime of the `wine.inf` it last ran in
+/// `.update-timestamp`, and re-runs `wineboot --update` whenever the runtime's
+/// copy is newer — minutes of `setupapi`, a rewritten registry, and a hang
+/// that took a day to characterise. The rebuilt file being identical is what
+/// makes carrying the time over honest rather than a lie about what a prefix
+/// has seen. Failure here is not a build failure; it costs a prefix one slow
+/// first launch.
+fn carryWineInfTime(
+    io: Io,
+    vars: *std.process.Environ.Map,
+    sess: session.Session,
+    paths: recipe.Paths,
+    w: *Io.Writer,
+) !void {
+    const mine = try sess.join(&.{ paths.install, layout.wine_inf });
+    if (!sess.exists(mine)) return;
+
+    // The copy this install replaced comes first: a rebuild of the same
+    // runtime is the common case, and a prefix that has already booted it is
+    // the one with most to lose.
+    const saved = try sess.join(&.{ paths.build, previous_wine_inf });
+    if (sess.exists(saved) and
+        try spawnWait(io, vars, &.{ "/usr/bin/cmp", "-s", saved, mine }) == 0 and
+        try spawnWait(io, vars, &.{ "/usr/bin/touch", "-r", saved, mine }) == 0)
+    {
+        try w.writeAll(
+            \\
+            \\wine.inf is identical to the one this install replaced, so its time was
+            \\carried over: a prefix that has booted this runtime before does not answer
+            \\the rebuild with several minutes of `wineboot --update`.
+            \\
+        );
+        return;
+    }
+
+    for (try sess.installed(layout.runtimes)) |name| {
+        if (std.mem.eql(u8, name, recipe.runtime_name)) continue;
+        const theirs = try sess.join(&.{ sess.root, layout.runtimes, name, layout.wine_inf });
+        if (!sess.exists(theirs)) continue;
+        if (try spawnWait(io, vars, &.{ "/usr/bin/cmp", "-s", theirs, mine }) != 0) continue;
+        if (try spawnWait(io, vars, &.{ "/usr/bin/touch", "-r", theirs, mine }) != 0) continue;
+        try w.print(
+            "\nwine.inf is identical to {s}'s, so its time was carried over: a prefix\nmoves between the two runtimes without re-running wineboot.\n",
+            .{name},
+        );
+        return;
+    }
+}
+
+fn reportBuilt(w: *Io.Writer, paths: recipe.Paths) !void {
+    try w.print("\nThe runtime {s} is built, in {s}\n", .{ recipe.runtime_name, paths.install });
+    try w.print("Its source tree is kept in {s}, which is the evidence for what it is.\n", .{paths.wine});
+    try w.writeAll(
+        \\
+        \\It has no D3DMetal yet, so it runs Windows programs but not Direct3D games.
+        \\Apple's half comes from the Game Porting Toolkit DMG (docs/d3dmetal.md), and
+        \\this installs it:
+        \\
+        \\
+    );
+    try w.print("  protium redist \"/Volumes/.../redist/lib\" --into {s}/{s}\n", .{ paths.install, layout.lib_dir });
+}
+
+/// One `-j`, from the number of processors, allocated because `make` takes it
+/// as a single argument.
+fn jobs(arena: std.mem.Allocator) ![]const u8 {
+    const n = std.Thread.getCpuCount() catch 4;
+    return std.fmt.allocPrint(arena, "-j{d}", .{n});
+}
+
+fn buildFailed(w: *Io.Writer, what: []const u8) !u8 {
+    try w.print("\nprotium build: {s} failed. The output above says why.\n", .{what});
+    try w.writeAll("Nothing is thrown away: running `protium build` again resumes from here.\n");
+    return 1;
+}
+
+/// `bison-3.8.2.tar.xz` is unpacked as `bison-3.8.2`.
+fn stem(archive: []const u8) []const u8 {
+    const cut = std.mem.indexOf(u8, archive, ".tar.") orelse return archive;
+    return archive[0..cut];
 }
 
 // ---------------------------------------------------------------------------
@@ -2011,7 +2649,7 @@ fn installClean(
     try w.writeAll("Every installer in it is the publisher's own, and `protium install`\n");
     try w.writeAll("downloads what it needs again.\n\n");
 
-    if (!opts.force and !try confirm(io, w, "Delete the downloaded installers?")) {
+    if (!opts.force and !try confirm(io, w, "Delete the downloaded installers?", "Pass --force to delete without the question.")) {
         try w.writeAll("Nothing was deleted.\n");
         return 1;
     }

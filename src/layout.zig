@@ -27,6 +27,21 @@ pub const prefixes = "prefixes";
 /// holds nothing that cannot be downloaded again.
 pub const downloads = "downloads";
 
+/// Where `protium build` works: the archives it fetched, the extracted Wine
+/// tree, the out-of-tree build directory, and the bison and llvm-mingw it
+/// built or unpacked for itself.
+///
+/// It is kept rather than cleaned up. The source tree in it is evidence: the
+/// day the Steam sign-in bug was found, the decisive step was reading
+/// `GetLogicalDrives` in the tree the runtime had been built from. See
+/// docs/wine-build.md.
+pub const build_dir = "build";
+
+/// The x86-64 libraries Wine is linked against and `dlopen`s — FreeType,
+/// GnuTLS, nettle, hogweed, GMP. protium does not build these; it checks for
+/// them and says what is missing. See `recipe.deps`.
+pub const deps_dir = "deps";
+
 /// The file recording which runtime and prefix to use, in the same
 /// `KEY=VALUE` form as a prefix's own settings — see `env.parse`.
 pub const defaults_file = "defaults";
@@ -41,6 +56,12 @@ pub const wine_loader = "bin/wine";
 pub const wineserver = "bin/wineserver";
 pub const bin_dir = "bin";
 pub const lib_dir = "lib";
+
+/// The file whose modification time a prefix records in `.update-timestamp`.
+/// A second runtime built from the same tree has a newer copy of a
+/// byte-identical file, and a prefix that meets it re-runs `wineboot --update`
+/// — minutes of `setupapi` for no change. See docs/wine-build.md.
+pub const wine_inf = "share/wine/wine.inf";
 
 /// The file a prefix has once `wineboot` has finished with it. `wineboot`
 /// returning is not the signal — `wineserver` inherits stdout and lingers

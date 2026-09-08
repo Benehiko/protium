@@ -17,7 +17,14 @@ Everything protium manages lives under one directory:
 <root>/runtimes/<name>/     a Wine install: bin/wine, lib/wine/...
 <root>/prefixes/<name>/     a WINEPREFIX, with its protium.conf inside it
 <root>/defaults             which runtime and which prefix to use
+<root>/build/               the Wine build: sources, toolchain, object files
+<root>/deps/                the x86-64 FreeType and GnuTLS Wine is built against
 ```
+
+The last two belong to `protium build` ([`wine-build.md`](wine-build.md)).
+`build/` is kept rather than cleaned up — the source tree in it is the evidence
+for what the runtime beside it actually is — and `deps/` is the one part
+protium does not build for you.
 
 `<root>` is the first of these that is set:
 

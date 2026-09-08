@@ -14,6 +14,72 @@ is where it lives on the machine this was verified on — `wine/` is the tree,
 `build-p1/` and `build-p2/` the out-of-tree builds, `tools/` and `llvm-mingw/`
 the toolchain.
 
+## `protium build` does all of this
+
+```sh
+protium build
+```
+
+That command is this document, carried out: it fetches CrossOver's sources,
+bison and llvm-mingw into `<root>/build`, applies the patches, adds
+`SONAME_LIBVULKAN`, configures, builds, installs the result as the runtime
+`wine-11.0-cx26.3-p2`, and copies FreeType and GnuTLS into it with their
+install names rewritten. `protium prefix new` offers it when there is no
+runtime to boot a prefix with — it prints what it is about to do and waits for
+an answer, because a ten-minute build is not what `prefix new` reads like.
+`--force` answers the question in advance.
+
+Two things it does not do.
+
+* **It does not build the `deps` prefix.** The x86-64 FreeType, GnuTLS,
+  nettle, hogweed and GMP below have to be there already; the command names
+  what is missing and stops. This document records that they were built shared
+  into that prefix, and what each one is for, but not the configure line that
+  produced them — and a command nobody has written down is not one the program
+  should run for the first time in the middle of a build. The
+  [Toolchain](#toolchain) table is where they come from.
+* **It does not install D3DMetal**, which it cannot: Apple's DMG needs a
+  developer sign-in. The Wine it produces runs `protium run cmd /c ver` and no
+  Direct3D game; the command finishes by printing the `protium redist` line
+  that installs Apple's half into what it just built.
+
+Every step decides for itself whether it has already been done, and decides by
+a file the step itself produces — `tools/bin/bison`, `wine/VERSION`, the
+`Makefile` in the build directory — rather than by a marker protium keeps. So
+an interrupted build is resumed by running the command again, and a tree
+someone assembled by hand from the rest of this document is picked up rather
+than redone. Whether a patch is already in is asked of `patch -C` for the same
+reason.
+
+The rest of this document is what that command does and, more to the point,
+why each step is the way it is. Read it before running the build by hand, and
+read it when the build breaks.
+
+*Verified on 2026-09-08, from an empty root on an M4 Mac (macOS 26.6.2, Xcode
+26.6, Apple clang 21), with `deps/` pointed at the prefix an earlier build had
+produced. `protium build` fetched 263 MB — bison 3.8.2, llvm-mingw 20260826,
+and `crossover-sources-26.3.0.tar.gz`, sha256
+`ac99c8ca4b3848f3e81784135f023df266b61c2345726ea55a50b3e030dd6872` — and had
+`wine-11.0-cx26.3-p2` installed 6 minutes 15 seconds later. The generated
+`config.h` records `SONAME_LIBFREETYPE "libfreetype.6.dylib"`,
+`SONAME_LIBGNUTLS "libgnutls.30.dylib"` and the added `SONAME_LIBVULKAN`;
+`lipo -archs bin/wine` is `x86_64`; `otool -L` on each of the five copied
+dylibs names no path back into `deps`; and `advapi32.dll` carries the string
+`protium`, which is `patches/0002` in the built PE. The build tree was 3.7 GB
+and the runtime 1.1 GB.*
+
+*`protium prefix new default` against that runtime then booted a prefix, and
+`protium run cmd /c ver` in it printed `Microsoft Windows 10.0.19045`. The
+prefix's profile is `C:\users\protium`, and `cmd /c echo %USERNAME%` answers
+`protium`, so `patches/0002` is in effect at run time and not merely in the
+binary.*
+
+*Running `protium build` a second time on the same root re-used everything:
+both patches were reported already in the tree, `make` had nothing to rebuild,
+and `share/wine/wine.inf` kept the modification time it already had — so the
+prefix that had booted that runtime did not answer the rebuild with `wineboot
+--update`.*
+
 *Verified end to end on 2026-09-05, against an M4 Mac running macOS 26.6.1
 with Xcode 26.6 / Apple clang 21, and again on 2026-09-08 (macOS 26.6.2 build
 25G83, Xcode 26.6 build 17F113, Apple clang 21.0.0 `clang-2100.1.1.101`,
@@ -406,7 +472,12 @@ runtimes without noticing.
 protium prefix new default
 ```
 
-This sets `WINEPREFIX` and the rest for you and runs `wineboot -u`. Expect
+With no runtime installed, this offers the build above first, prints what it
+is about to fetch and how long it will take, and waits for an answer;
+`--force` answers in advance. With a runtime installed it goes straight to the
+prefix.
+
+It sets `WINEPREFIX` and the rest for you and runs `wineboot -u`. Expect
 several minutes: it runs `wine.inf` through `setupapi`, and every bit of it is
 x86-64 under Rosetta. protium waits for `wineboot`, then ends the session with
 `wineserver -k` — `wineboot` returning is not the signal on its own, because

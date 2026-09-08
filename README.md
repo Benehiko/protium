@@ -54,13 +54,17 @@ One binary, at `~/.local/bin/protium`.
 | | Command | Takes |
 | --- | --- | --- |
 | 1 | `protium doctor` — checks every prerequisite at once | seconds |
-| 2 | Build Wine: **[docs/wine-build.md](docs/wine-build.md)** | ~1 hour, mostly unattended |
+| 2 | `protium build` — fetches CodeWeavers' sources and builds Wine | ~10 minutes, unattended |
 | 3 | `protium redist "/Volumes/…/redist/lib" --into ~/.local/share/protium/runtimes/<name>/lib` | minutes |
 | 4 | `protium prefix new default` | minutes |
 | 5 | `protium shell-init` — prints one line for your shell's rc file | seconds |
 
-Step 2 is the only genuinely technical part; the recipe is written out command
-by command, including the three mistakes that each cost an hour to find.
+Step 2 is the recipe in **[docs/wine-build.md](docs/wine-build.md)** carried
+out for you. Read that document anyway: it is written out command by command,
+it explains why each step is the way it is, and it includes the three mistakes
+that each cost an hour to find. It also covers the one part `protium build`
+does not do — the x86-64 FreeType and GnuTLS it needs, which it checks for and
+names rather than guessing at. Step 4 offers step 2 if you skipped it.
 
 > [!WARNING]
 > Step 3 has two possible install methods, and **one of them destroys the Wine

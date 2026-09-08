@@ -44,6 +44,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addAnonymousImport("webhelper_shim", .{
         .root_source_file = webhelper.getEmittedBin(),
     });
+    addPatches(b, exe.root_module);
     b.installArtifact(exe);
 
     const run = b.addRunArtifact(exe);
@@ -62,5 +63,26 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    addPatches(b, tests.root_module);
     b.step("test", "Run the tests").dependOn(&b.addRunArtifact(tests).step);
+}
+
+/// The source patches `protium build` applies, embedded in the binary.
+///
+/// protium is one file that can be copied anywhere, so a build it runs cannot
+/// depend on a checkout of this repository being beside it. The patches are
+/// carried the same way the steamwebhelper shim is, and for the same reason.
+/// Both the program and the test module get them, because `src/recipe.zig`
+/// holds them and the tests check them.
+fn addPatches(b: *std.Build, module: *std.Build.Module) void {
+    const names = [_][]const u8{
+        "0001-ntdll-test-only-the-byte-of-a-BOOLEAN-syscall-argument.patch",
+        "0002-advapi32-shell32-report-the-Windows-user-as-protium.patch",
+    };
+    for (names, 1..) |name, n| {
+        module.addAnonymousImport(
+            b.fmt("patch_{d:0>4}", .{n}),
+            .{ .root_source_file = b.path(b.fmt("patches/{s}", .{name})) },
+        );
+    }
 }

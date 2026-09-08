@@ -49,7 +49,7 @@ pub const Step = enum {
     pub fn command(s: Step) ?[]const u8 {
         return switch (s) {
             .move_root => null,
-            .install_wine => null,
+            .install_wine => "protium build",
             .install_d3dmetal => "protium redist <apple-redist-lib> --into <runtime>/lib",
             .choose_runtime => "protium use --runtime <name>",
             .create_prefix => "protium prefix new default",
@@ -64,7 +64,7 @@ pub const Step = enum {
     pub fn why(s: Step) []const u8 {
         return switch (s) {
             .move_root => "the root holds a space, and Wine's install rules do not quote paths — set PROTIUM_HOME to a path without one",
-            .install_wine => "no Wine yet; build one from CodeWeavers' sources and install it into <root>/runtimes/<name> — see docs/wine-build.md",
+            .install_wine => "no Wine yet; `protium build` fetches CodeWeavers' sources and builds one, and docs/wine-build.md is the same recipe by hand",
             .install_d3dmetal => "the Wine has no D3DMetal, so a Direct3D game will render nothing — see docs/d3dmetal.md",
             .choose_runtime => "several runtimes are installed and none is recorded as the default",
             .create_prefix => "no prefix yet; a prefix is the Windows installation your games live in",
@@ -140,11 +140,13 @@ test "ambiguity is resolved before the thing it is ambiguous about is used" {
     try testing.expectEqual(Step.choose_prefix, nextStep(prefixes));
 }
 
-test "every step says why, and all but the two manual ones name a command" {
+test "every step says why, and all but the one manual step names a command" {
     for (std.enums.values(Step)) |s| {
         try testing.expect(s.why().len != 0);
         switch (s) {
-            .move_root, .install_wine => try testing.expectEqual(@as(?[]const u8, null), s.command()),
+            // Moving the root is a decision about where a disk's worth of files
+            // belongs, and no command protium could print would make it.
+            .move_root => try testing.expectEqual(@as(?[]const u8, null), s.command()),
             else => try testing.expect(s.command().?.len != 0),
         }
     }
