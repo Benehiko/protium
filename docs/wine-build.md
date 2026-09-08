@@ -60,10 +60,18 @@ The scratch prefix these land in is what `protium` keeps as
 `~/.local/share/protium/deps` — `include/{freetype2,gnutls,nettle,gmp.h}` and
 `lib/lib{freetype,gnutls,nettle,hogweed,gmp}.dylib`, all `x86_64` by `lipo
 -archs`, with absolute install names. The 2026-09-08 rebuild pointed `CPPFLAGS`
-and `LDFLAGS` at it directly and rebuilt none of them; the generated
-`config.h` then has `SONAME_LIBFREETYPE "libfreetype.6.dylib"` and
-`SONAME_LIBGNUTLS "libgnutls.30.dylib"`, so a build from this recipe has
-schannel, which an earlier version of this document said it lacked.
+and `LDFLAGS` at it directly and rebuilt none of them; the generated `config.h`
+then has `SONAME_LIBFREETYPE "libfreetype.6.dylib"` and `SONAME_LIBGNUTLS
+"libgnutls.30.dylib"`.
+
+**Recording the soname in `config.h` is not the same as having the library.**
+Wine `dlopen`s both of these by bare soname at run time, so each one has to be
+copied into the installed runtime's `lib/` as well — see [Installing it
+somewhere durable](#installing-it-somewhere-durable). Until GnuTLS was, this
+build had no TLS at all: `err:secur32:SECUR32_initSchannelSP no schannel
+support, expect problems`, and every one of Steam's WebSocket connections
+failed while plain UDP worked. That cost a morning; the measurement is in
+[`steam-login.md`](steam-login.md#the-second-blocker-no-tls-so-every-websocket-cm-connection-fails).
 
 **Apple's patched clang is not needed.** The `game-porting-toolkit-compiler`
 dependency in Apple's formula is an artefact of the Wine 7.7 era; Wine 11's
@@ -214,13 +222,15 @@ gphoto2, sane, capi20, Samba NetAPI, krb5. Four are worth a decision:
 | `libvulkan`/MoltenVK | no Vulkan | irrelevant — D3DMetal goes straight to Metal |
 | GStreamer / FFmpeg | no `winegstreamer` media playback | fine for games that decode video in-engine |
 | SDL2 | no SDL joystick backend | controllers arrive through IOHID; `IOServiceMatching` probes yes |
-| GnuTLS | no schannel/bcrypt TLS | not actually given up: the `deps` prefix carries it, and `config.h` records `SONAME_LIBGNUTLS` |
+| GnuTLS | no schannel TLS, so no HTTPS and no `wss://` for any Windows program | **build it** — the recipe's `deps` prefix does |
 
-FreeType is the one worth building, because without it Wine has no font
-rasteriser at all and any Win32 UI — the Steam client's login window included —
-renders blank. GnuTLS turned out to be worth it too: the Steam client's own
-HTTP stack goes through schannel, and `bootstrap_log.txt` fetching its update
-manifest over HTTPS is that library at work.
+FreeType and GnuTLS are the two worth building. Without FreeType, Wine has no
+font rasteriser at all and any Win32 UI — the Steam client's login window
+included — renders blank. Without GnuTLS, `secur32` comes up with `no schannel
+support, expect problems`, and a program that needs an encrypted socket simply
+cannot open one: the Steam client's WebSocket connection managers all fail and
+online sign-in is impossible, which took a morning to find because the failure
+looks like a network fault rather than a missing library.
 
 ## Runtime note
 
@@ -275,6 +285,26 @@ Two things must then be added to it:
   `DYLD_FALLBACK_LIBRARY_PATH` for every launch, which is what makes the
   soname resolve; without the dylib being there, every launch comes up with no
   font rasteriser. See [`prefixes.md`](prefixes.md).
+* **GnuTLS, and the three libraries it needs.** Same rule, same reason, and it
+  is easy to miss because nothing about the build hints at it — `config.h`
+  records `SONAME_LIBGNUTLS` whether or not the library will ever be found.
+  GnuTLS pulls in nettle, hogweed and GMP, and the recipe's copies refer to
+  each other by absolute path into the scratch prefix, so copy all four and
+  rewrite the references to `@loader_path` if the runtime is to stand on its
+  own:
+
+  ```sh
+  cp "$SCRATCH"/x86deps/lib/lib{gnutls.30,nettle.8,hogweed.6,gmp.10}.dylib "$install"/lib/
+  cd "$install"/lib
+  install_name_tool -id @loader_path/libgnutls.30.dylib libgnutls.30.dylib
+  for dep in libnettle.8 libhogweed.6 libgmp.10; do
+      install_name_tool -change "$SCRATCH/x86deps/lib/$dep.dylib" "@loader_path/$dep.dylib" libgnutls.30.dylib
+  done
+  ```
+
+  Check it with `WINEDEBUG=+winediag` on any launch: a runtime that is missing
+  it prints `Failed to load libgnutls, secure connections will not be
+  available`, and a runtime that has it prints nothing.
 * **D3DMetal**, merged in — see [`d3dmetal.md`](d3dmetal.md) for why merged and
   not moved aside. `protium redist <apple-redist-lib> --into <install>/lib`
   prints the right procedure for that destination. A second runtime built from

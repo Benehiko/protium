@@ -14,7 +14,10 @@ turns out to be intermittent rather than permanent. Root cause found
 2026-09-08: [a Wine bug in how its two halves pass a `BOOLEAN`, exposed by
 protium's clang-built PE side](#the-caller-read-directly--and-the-bug-it-exposes),
 proven by zeroing one stack slot in the running client and watching it
-connect.*
+connect. A second, unrelated blocker was found behind it the same day —
+[the build had no TLS](#the-second-blocker-no-tls-so-every-websocket-cm-connection-fails),
+so every WebSocket connection manager failed — and fixing both puts a working
+sign-in page in front of a live connection.*
 
 ## The short version
 
@@ -113,7 +116,15 @@ Every layer below the connection manager works, and works identically:
 * **TLS and HTTPS.** `logs/bootstrap_log.txt` shows the client fetching its
   update manifest from `https://client-update.fastly.steamstatic.com` and
   getting `HTTP 304 Not Modified` two minutes into a run that is otherwise
-  stuck. This is the client's own HTTP stack over Wine's schannel, not CEF's.
+  stuck. ~~This is the client's own HTTP stack over Wine's schannel, not
+  CEF's.~~ **The second half of that was wrong.** It cannot have been Wine's
+  schannel: every run in this document until 2026-09-08 had no TLS backend at
+  all, because `libgnutls` was never installed where the loader could find it
+  ([the second blocker](#the-second-blocker-no-tls-so-every-websocket-cm-connection-fails)).
+  Steam bundles its own TLS and this fetch used it. The observation stands —
+  the client reaches the internet and gets an answer — but it says nothing
+  about Wine's TLS, and the section this bullet belongs to overstated its case
+  for a fortnight because of it.
 * **Adapter enumeration.** `wine ipconfig /all` produces byte-identical output
   under both Wines — 28 adapters, the same four with IPv4 addresses, the same
   default gateway.
@@ -1206,3 +1217,174 @@ token is refused, as [(b)](#b-does-it-reach-logged-on-no--and-the-reason-is-not-
 records, so `Logged On` needs a password and Steam Guard typed into the
 client. The login page renders, the gate is open, and that is the one step
 left.
+
+## The second blocker: no TLS, so every WebSocket CM connection fails
+
+*Measured 2026-09-08, after the patched runtime opened the gate, when an
+interactive sign-in was attempted and could not be completed. Same host, same
+client build 1788652215, runtime `wine-11.0-cx26.3-p1`.*
+
+Opening the gate is necessary and not sufficient. With `Schedule init returned
+1` on every start, the client reaches `YieldingConnect`, asks the Steam
+directory for connection managers, and then fails to reach almost all of them.
+Between 09:08 and 09:16, across four client starts:
+
+| Transport | `Connect() starting connection` | `ConnectionCompleted()` | `ConnectFailed` |
+| --- | --- | --- | --- |
+| WebSocket | 18 | 0 | 18 |
+| UDP | 2 | 2 | 0 |
+
+Every WebSocket attempt fails in under a second, with no address:
+
+```
+[Connecting, 0, 7] Connect() starting connection (eNetQOSLevelHigh, cmp2-fra1.steamserver.net:27019, WebSocket)
+[Connecting, 0, 0] ConnectFailed('Connection Failed':0) (0.0.0.0:0, WebSocket)
+```
+
+The client picks the transport by rolling against a ratio the directory gives
+it — `CM Directory list says 85% of connections should be websockets, we
+rolled 19 - using WebSockets as default` — so roughly five attempts in six were
+doomed, and the two that were not connected immediately over UDP. That is why
+this looked intermittent rather than total.
+
+It gets worse on the **go online** path. Pressing it drops the request to QoS
+level 2, and at that level the directory answers `100% of connections should be
+websockets`. So **go online** could never succeed, whatever the gate did.
+
+### The cause: `libgnutls` is built but not loadable
+
+`WINEDEBUG=+secur32,+winediag` on a client start says it in four lines:
+
+```
+err:winediag:process_attach Failed to load libgnutls, secure connections will not be available.
+err:winediag:process_attach failed to load libgnutls, no support for pfx import/export
+err:winediag:gnutls_process_attach failed to load libgnutls, no support for encryption
+err:secur32:SECUR32_initSchannelSP no schannel support, expect problems
+```
+
+A Steam WebSocket CM is `wss://…:443`, which is TLS, which is schannel, which
+is GnuTLS. Without it the client has no encrypted transport at all and only
+plain UDP works.
+
+The library was not missing from the build. `include/config.h` from the
+2026-09-08 build has `#define SONAME_LIBGNUTLS "libgnutls.30.dylib"`, and
+`~/.local/share/protium/deps/lib/libgnutls.30.dylib` is an x86-64 dylib built
+by the recipe. **Compiled in is not the same as loadable.** Wine `dlopen`s it
+by that bare soname at runtime, exactly as it does FreeType, and the only
+directory on `DYLD_FALLBACK_LIBRARY_PATH` is the runtime's own `lib/`, which
+held `libfreetype.6.dylib` and nothing else. Both runtimes were built this way,
+so this is not a consequence of the patch — the original runtime had no TLS
+either, and everything in this document above was measured on a client that
+could not open an encrypted socket.
+
+An earlier version of [`wine-build.md`](wine-build.md) claimed the opposite,
+that a build from this recipe has schannel because `config.h` records the
+soname. That claim was wrong and is corrected there. It also credited the
+client's HTTPS fetch of its update manifest to this library; that fetch
+happened while `secur32` was reporting no schannel support, so whatever served
+it, it was not GnuTLS.
+
+### The fix, and what it changed
+
+The same treatment FreeType already gets — put the dylib where the loader
+looks:
+
+```sh
+cp ~/.local/share/protium/deps/lib/lib{gnutls.30,nettle.8,hogweed.6,gmp.10}.dylib <runtime>/lib/
+install_name_tool -id  @loader_path/libgnutls.30.dylib <runtime>/lib/libgnutls.30.dylib
+install_name_tool -change <deps>/lib/libnettle.8.dylib @loader_path/libnettle.8.dylib <runtime>/lib/libgnutls.30.dylib   # and hogweed, gmp
+```
+
+GnuTLS needs nettle, hogweed and GMP, and the recipe's copies name each other
+by absolute path into `deps/`, so the three are copied alongside and the
+references rewritten to `@loader_path`. The runtime tree is then self-contained
+and does not depend on `deps/` surviving.
+
+The next client start, on the same prefix, with `WINEDEBUG=+winediag`:
+
+* **Zero** `Failed to load libgnutls` lines, where every previous start had them.
+* The first connection attempt of the run was a WebSocket, to port 443, and it
+  completed: `ConnectionCompleted() (155.133.252.68:443, WebSocket) local
+  address (192.168.178.26:…)`. Eighteen consecutive WebSocket attempts had
+  failed before this.
+* `SetLoginState: WaitingForCredentials`, the sign-in window open, and no
+  `Failed to start auth session` — the error that appeared on every earlier
+  attempt, because the page had no connection to start a session on.
+
+### Two smaller things seen on the way
+
+**A logon that fails leaves the client in offline mode, not at the login page.**
+`Received logon failure response` → `Start offline - 1` → `SetLoginState:
+Success`. Pressing **go online** from there re-enters `LogOn()` at QoS 2, which
+is the WebSocket-only path above, so it fails every time. Reaching the login
+form from that state means restarting the client, not pressing a button in it.
+
+**"Sign out and restart" does not restart.** `UI Request: sign out and restart`
+is the last line the client writes; `Log session ended` follows and the process
+exits without coming back. It also clears the account entry from
+`config/loginusers.vdf`. Not diagnosed further — the client is simply started
+again by hand — but worth knowing before pressing it, because it looks like a
+crash.
+
+## Signing in online is enough to start a game update, on its own
+
+*Measured 2026-09-08, the first time this prefix reached `Logged On`. Recorded
+because the assumption that governed every online experiment in this document
+turned out to be false, and it cost 21 GB of disk before it was caught.*
+
+The rule this repository has been working to was: `AutoUpdateBehavior 1` means
+"only update this game when I launch it", so a client that is online but never
+used to launch the game will not start the 52 GB Elden Ring update. **That is
+wrong.** The game was never launched, through Steam or otherwise, and the
+update started anyway, 34 seconds after logon:
+
+```
+[09:23:14] [Logged On, 4, 7] [U:1:<account>] RecvMsgClientLogOnResponse() : processing complete
+[09:23:48] AppID 1245620 scheduler update : Priority First, not played for 218188 seconds, update disabled for 0 seconds
+[09:23:48] AppID 1245620 state changed : Update Required,Fully Installed,Update Queued,Files Missing,
+[09:23:48] AppID 1245620 state changed : Update Required,Fully Installed,Update Queued,Files Missing,Update Running,
+[09:23:49] Created download interface of type 'CDN' (2) to host alibaba.cdn.steampipe.steamcontent.com
+```
+
+`logs/content_log.txt`, and the client's own words for why: its update
+**scheduler** picked the app up as `Priority First, not played for 218188
+seconds`. `AutoUpdateBehavior` was `1` in `appmanifest_1245620.acf` before the
+client was started and still `1` afterwards — it was never touched, and it did
+not prevent this. `console_log.txt` has no launch of AppID 1245620 at all.
+
+What it cost, in three minutes before it was noticed and the client killed:
+
+| | Before | After |
+| --- | --- | --- |
+| `steamapps/downloading` | 38 MB | 37 GB |
+| Free space on the data volume | 38 GB | 17 GB |
+| `StateFlags` in the manifest | `38` | `1062` |
+| `TargetBuildID` | `23850278` (2026-09-07) | `25080141` |
+
+Two things limited the damage, and both are worth knowing:
+
+* **Nothing in the installed game was touched.** `find steamapps/common/ELDEN
+  RING -type f -mmin -10` returned zero files while the update was running, and
+  again after the client was killed. Steam stages a delta build entirely in
+  `steamapps/downloading` and only commits at the end, so killing the client
+  mid-update leaves the playable install exactly as it was. No verify, no
+  repair, no re-download of what is already there.
+* **`BytesDownloaded` stayed at `0`** against `BytesToDownload 560261824`. Most
+  of the 37 GB is the new build being assembled locally out of the old one, not
+  bytes off the network — which is also why it grew that fast.
+
+### What actually protects the install
+
+Not `AutoUpdateBehavior`. The measures that work are the ones the 2026-09-07
+session used and then reverted:
+
+* Make `steamapps/downloading`, `steamapps/temp` and `steamapps/common/<game>`
+  unwritable before the client goes online. Steam then cannot stage anything;
+  it reports an error against the app and does no damage.
+* Or do not give the prefix a `steamapps` that points at an install worth
+  protecting. This prefix's is a symlink into the CrossOver bottle, which is
+  the whole reason an update here rewrites something CrossOver also uses.
+
+`Update Queued` survives a kill: the manifest still says `StateFlags 1062`, so
+the next online, signed-in client resumes this update within a minute unless
+one of the two measures above is in place first.
