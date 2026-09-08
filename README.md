@@ -120,12 +120,13 @@ protium run "C:\Program Files (x86)\Steam\steam.exe" \
 
 ### Every launch after that, offline
 
-Online sign-in fails on a Wine built by the recipe as first written — seven
-starts in eight, inside one call — and [docs/steam-login.md](docs/steam-login.md)
-traces that to a Wine bug in how its PE and unix halves pass a `BOOLEAN`,
-which `patches/` now fixes: a runtime built with the patch cleared the gate on
-three starts of three. Offline mode sidesteps the whole question, and a game
-needs nothing more.
+Online sign-in works on a runtime built with `patches/0001` and carrying
+GnuTLS, and it reached `Logged On` on 2026-09-08. On a Wine built by the recipe
+as first written it fails twice over: seven starts in eight never open the
+connection gate, and the build has no TLS, so every WebSocket connection
+manager fails regardless. [docs/steam-login.md](docs/steam-login.md) traces
+both. Offline mode sidesteps the whole question and a game needs nothing more,
+but it is no longer the only route.
 
 Add these to your account's block in
 `<prefix>/drive_c/Program Files (x86)/Steam/config/loginusers.vdf`:

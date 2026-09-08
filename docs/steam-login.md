@@ -34,12 +34,16 @@ client sits logged off forever. The legacy login path has no such
 dependency. See [The flags are necessary, not
 sufficient](#the-flags-are-necessary-not-sufficient--use--noreactlogin).
 
-The online path is still broken, and the fault is one call. Clicking **go
-online** in a client that signed in offline is the same failure — see [What
-`Schedule init returned 22` actually
-is](#what-schedule-init-returned-22-actually-is). It fails on roughly seven
-starts in eight rather than all of them; the one that got through was stopped
-by Valve rejecting a copied token, not by anything in Wine.
+**Online sign-in works as of 2026-09-08**, on a runtime built with
+`patches/0001` and carrying GnuTLS, and it took fixing two independent faults
+to get there. The client reached `Logged On` against Valve's servers with a
+password and Steam Guard typed into its own login page. Everything below about
+`Schedule init returned 22` describes the first fault, on a runtime without the
+patch, where the connection gate never opens on roughly seven starts in eight
+and clicking **go online** hits the same call. The second fault is that the
+build had no TLS at all, so every WebSocket connection manager failed even once
+the gate opened — see [the second
+blocker](#the-second-blocker-no-tls-so-every-websocket-cm-connection-fails).
 
 It is not a networking fault at all. Every connection attempt is gated on a
 thread named `MachineIDInfoThread`, which never finishes: it re-asks the
@@ -847,9 +851,10 @@ the same two harmless complaints as before:
 `appmanifest_1245620.acf` had `AutoUpdateBehavior 0` — "always keep this game
 updated" — with `buildid 22984413` against `TargetBuildID 23850278`, 560 MB to
 download and 52 GB to stage, and 38 MB of deltas already in
-`steamapps/downloading`. Since the prefix's `steamapps` is a symlink into that
-bottle, an online client would have started rewriting an install CrossOver also
-uses. Before the client was allowed online, `AutoUpdateBehavior` was set to `1`
+`steamapps/downloading`. At the time the prefix's `steamapps` was a symlink
+into that bottle, so an online client would have started rewriting an install
+CrossOver also used. That is no longer the arrangement — see [the game moved
+into the prefix](#the-game-moved-into-the-prefix-and-then-stopped-running). Before the client was allowed online, `AutoUpdateBehavior` was set to `1`
 ("only update this game when I launch it") and `steamapps/downloading`,
 `steamapps/temp` and `steamapps/common/ELDEN RING` were made unwritable, which
 was confirmed by trying to write to each one. The permissions have been put
@@ -1382,9 +1387,91 @@ session used and then reverted:
   unwritable before the client goes online. Steam then cannot stage anything;
   it reports an error against the app and does no damage.
 * Or do not give the prefix a `steamapps` that points at an install worth
-  protecting. This prefix's is a symlink into the CrossOver bottle, which is
-  the whole reason an update here rewrites something CrossOver also uses.
+  protecting. This prefix's was a symlink into the CrossOver bottle, which is
+  the whole reason an update here rewrote something CrossOver also used. It is
+  now a real directory inside the prefix, so the blast radius is protium's own.
 
 `Update Queued` survives a kill: the manifest still says `StateFlags 1062`, so
 the next online, signed-in client resumes this update within a minute unless
 one of the two measures above is in place first.
+
+## The game moved into the prefix, and then stopped running
+
+*2026-09-08. Two separate things, recorded together because they happened in
+that order and the first is the obvious suspect for the second. It is not the
+cause; four controlled runs say so.*
+
+### The move
+
+The prefix borrowed exactly one thing from the CrossOver bottle: `steamapps`,
+a symlink. `appcache`, `depotcache`, `userdata`, `config` and `logs` were
+already real directories inside the prefix. Both trees are on the same volume,
+so replacing the link with the real directory is a rename, not a copy:
+
+```sh
+rm "<prefix>/drive_c/Program Files (x86)/Steam/steamapps"          # the link only
+mv "<bottle>/drive_c/Program Files (x86)/Steam/steamapps" "<prefix>/.../steamapps"
+```
+
+It took under a second and moved 42 GB. `steamapps/downloading` was deleted
+first, which returned 37 GB — the volume went from 17 GB free to 54 GB.
+Afterwards `find <prefix> -type l -lname '*CrossOver*'` returns nothing: the
+prefix is self-contained, and CrossOver's bottle no longer holds the game.
+
+Nothing needed rewriting. `libraryfolders.vdf` records the library as
+`C:\Program Files (x86)\Steam`, a Windows path, which resolves inside whichever
+prefix the client runs in, and neither it nor the app manifest contains a host
+path. Steam signed in offline afterwards and stayed offline.
+
+**What this costs.** `protium prefix remove` used to skip the game because it
+refuses to follow a symlink out of a prefix — the rule in `src/removal.zig`.
+The game is now real data inside, so that command would be offering to delete
+42 GB of it. It reports the size and asks first, so it is a prompt to read
+rather than a trap, but the protection that used to be structural is now only a
+confirmation.
+
+### And then the game stopped running
+
+Elden Ring reached its title screen on 2026-09-07 in this prefix. It now dies
+within seconds of launch, every time:
+
+```
+wine: Unhandled page fault on write access to 0000000000000000 at address 0000000141EB9999
+0x00000141eb9999 eldenring+0x1eb9999: movl $0xdeadba, 0
+```
+
+A store of `0xdeadba` to address zero is the game's own fatal path, not a Wine
+fault — the game decided to die. It gets a long way first: the backtrace and
+thread list show Havok worker threads, `GXRenderThread` and nine `GXWorker`s,
+the `CR2` streaming threads, `HttpManagerThread`, `LibwebsocketsThread` and
+`CSCheatDetectionTitleModule::Thread` all created. This is not the clean
+`SteamAPI_Init` failure documented above, which exits with code 0 and no crash.
+
+**It is not anything protium changed today.** Four runs, Steam signed in
+offline on the same runtime as the game each time:
+
+| Runtime | GnuTLS | Result |
+| --- | --- | --- |
+| `wine-11.0-cx26.3-p1` | present | fault at `0x141EB9999` |
+| `wine-11.0-cx26.3` (unpatched) | present | same fault, same address |
+| `wine-11.0-cx26.3-p1` | removed | same fault, same address |
+| `wine-11.0-cx26.3-p1` | present | same fault, same address |
+
+So neither `patches/0001` nor the GnuTLS install is responsible, and the crash
+predates the move — the first one was recorded before `steamapps` was touched.
+
+**Two traps in measuring this**, both of which produced a wrong answer before
+they were caught. Steam and the game must run on the **same** Wine build: a
+game launched on the unpatched runtime against a client running on the patched
+one cannot reach the client at all, and exits in seconds looking like a
+different bug. And Wine writes `Unhandled page fault`, not `Unhandled
+exception` — a watcher grepping for the latter reports every crash as a clean
+exit.
+
+**Unexplained.** The most obvious candidate is the install state: Steam's
+content log flagged the app `Update Required,Fully Installed,Update Queued,
+Files Missing` *before* the aborted update ran, and the manifest still carries
+`StateFlags 1062` with `TargetBuildID 25080141` against an installed
+`buildid 22984413`. Whether the install is genuinely incomplete has not been
+established, and establishing it means letting Steam verify or update the game,
+which needs about 52 GB against the 53 GB now free.
