@@ -1368,12 +1368,21 @@ What it cost, in three minutes before it was noticed and the client killed:
 
 Two things limited the damage, and both are worth knowing:
 
-* **Nothing in the installed game was touched.** `find steamapps/common/ELDEN
+* ~~**Nothing in the installed game was touched.** `find steamapps/common/ELDEN
   RING -type f -mmin -10` returned zero files while the update was running, and
   again after the client was killed. Steam stages a delta build entirely in
   `steamapps/downloading` and only commits at the end, so killing the client
   mid-update leaves the playable install exactly as it was. No verify, no
-  repair, no re-download of what is already there.
+  repair, no re-download of what is already there.~~ **This was wrong, and it
+  is the worst mistake recorded in this document.** `-mmin` finds files that
+  were *modified*. It cannot see files that were *deleted*, and Steam had
+  deleted two of them: `Data0.bdt` and `Data1.bdt`, the game's two largest
+  archives, whose replacements it was assembling in `steamapps/downloading`
+  when it was killed. Their `.bhd` headers are still in place, which is why a
+  directory listing looks plausible at a glance. See [the archives are
+  gone](#the-cause-two-archives-are-missing). **A check for damage after an
+  interrupted update has to compare the file list against the manifest, not
+  look at timestamps.**
 * **`BytesDownloaded` stayed at `0`** against `BytesToDownload 560261824`. Most
   of the 37 GB is the new build being assembled locally out of the old one, not
   bytes off the network — which is also why it grew that fast.
@@ -1468,10 +1477,46 @@ different bug. And Wine writes `Unhandled page fault`, not `Unhandled
 exception` — a watcher grepping for the latter reports every crash as a clean
 exit.
 
-**Unexplained.** The most obvious candidate is the install state: Steam's
-content log flagged the app `Update Required,Fully Installed,Update Queued,
-Files Missing` *before* the aborted update ran, and the manifest still carries
-`StateFlags 1062` with `TargetBuildID 25080141` against an installed
-`buildid 22984413`. Whether the install is genuinely incomplete has not been
-established, and establishing it means letting Steam verify or update the game,
-which needs about 52 GB against the 53 GB now free.
+### The cause: two archives are missing
+
+The install is incomplete, and Steam's `Files Missing` flag meant exactly what
+it said. `Data0.bdt` and `Data1.bdt` are not there — not in the prefix, not in
+the bottle, nowhere on the machine — while every other archive is:
+
+| File | Size |
+| --- | --- |
+| `Data0.bhd` | 1,095,168 |
+| `Data0.bdt` | **missing** |
+| `Data1.bhd` | 6,157,312 |
+| `Data1.bdt` | **missing** |
+| `Data2.bdt` | 20,656,370,262 |
+| `Data3.bdt` | 2,838,626,336 |
+| `DLC.bdt` | 15,741,964,105 |
+
+The arithmetic agrees. The manifest records `SizeOnDisk 71087081872` (66 GB)
+and the directory holds 42 GB; `BytesToDownload` is `24433705296`, and 24.4 GB
+is what two archives of that scale come to. The `.bhd` files are the small
+header indexes and are all present, so nothing about the listing looks wrong
+unless the `.bdt` names are read carefully.
+
+That is why the game dies. It builds its world through a virtual filesystem
+rooted at `system:/`, backed by those archives — the strings beside the fatal
+path's data pointer are `data3` and `system:/`, in a region that also carries
+an RSA public key, which is the archive-verification material. With `Data0` and
+`Data1` gone it cannot resolve its startup assets, and it takes its own fatal
+path: `movl $0xdeadba, 0` after a call that reports the failure. It is not a
+Wine bug, not a Windows-version setting, and not the move.
+
+**How they came to be missing, in order.** Steam began the update at 09:23:48
+and was killed at 09:26:23. A Steam delta update replaces a large archive
+rather than patching it in place: it consumes the old file while assembling the
+new one under `steamapps/downloading`. Killing it mid-assembly leaves neither.
+The 37 GB then sitting in `downloading` was that partial work, and it was
+deleted afterwards to reclaim space — by which point the originals were already
+gone, so the deletion cost nothing that was still recoverable, but it did
+remove the last local copy of anything resembling them.
+
+**The route back is Steam.** The missing 24.4 GB has to be downloaded again;
+there is no local source. That is the one thing this investigation had been
+avoiding all along, and it is now the only way to make the game run. 53 GB is
+free, and `BytesToStage` is `52053490275`, so it fits, but not by much.
