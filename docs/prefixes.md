@@ -389,3 +389,131 @@ remember to undo it when the Wine is rebuilt, because the prefix will no longer
 pick up changes on its own.
 
 [`steam-login.md`](steam-login.md) is the comparison this came out of.
+
+## The Windows user is `protium`
+
+A prefix made by a protium runtime has its profile at `C:\users\protium`, and
+`%USERNAME%` reports `protium`:
+
+```
+$ protium run cmd /c echo %USERNAME%
+protium
+$ protium run cmd /c echo %USERPROFILE%
+C:\users\protium
+```
+
+That name comes from
+[`patches/0002`](../patches/0002-advapi32-shell32-report-the-Windows-user-as-protium.patch).
+Wine as CodeWeavers ship it answers `crossover`, from a patch of theirs
+commented `CrossOver Hack 12735`, and a prefix protium built from nothing
+therefore had its profile at `C:\users\crossover` — a name that is not
+protium's to use, and that says CrossOver is involved when it is not.
+
+The hardcoded name is in three places in `crossover-sources-26.3.0`, and the
+third is the one that decides the directory:
+
+| File | What it fixes |
+| --- | --- |
+| `dlls/advapi32/advapi.c:54,55` | `GetUserNameA` |
+| `dlls/advapi32/advapi.c:79,80` | `GetUserNameW` |
+| `dlls/shell32/shellpath.c:2636` | the `%USERPROFILE%` expansion, and so the profile directory |
+
+**The profile directory does not follow from `GetUserName`, and it does not
+follow from your Unix account either.** `CSIDL_PROFILE` is a `CSIDL_Type_User`
+folder with no parent, so `_SHGetDefaultValue` returns the literal
+`"%USERPROFILE%"`, and `_SHExpandEnvironmentStrings` expands that by appending
+its *own* hardcoded name to the `ProfilesDirectory` prefix — it never asks
+advapi32. `wineboot` reaches this through `SHGetFolderPathW( CSIDL_PROFILE )`
+and writes the answer into `USERPROFILE`, `HOMEPATH` and `HOMEDRIVE`; it writes
+`USERNAME` from `GetUserNameW` separately
+(`programs/wineboot/wineboot.c:889,896`). Patching advapi32 alone would rename
+the reported user and leave the directory where it was. That third site is
+spelled as a character array rather than a string literal, which is why
+grepping the tree for `crossover` does not find it:
+
+```c
+/* CrossOver Hack 12735 */
+static const WCHAR userName[] = {'c','r','o','s','s','o','v','e','r',0};
+```
+
+### An older prefix has to be migrated, and protium will not do it for you
+
+A prefix created before `patches/0002` keeps its profile at
+`drive_c/users/crossover`. A runtime built with the patch looks under
+`drive_c/users/protium`, does not find it, and creates an empty profile beside
+the populated one. Nothing errors. The visible symptom is that **Steam is
+signed out**, because its credentials and its CEF cache live at
+`AppData/Local/Steam` inside the profile that was left behind — see
+[`steam-login.md`](steam-login.md) for what re-signing in costs in this prefix.
+
+`protium prefix list` says so when it sees one:
+
+```
+$ protium prefix list
+protium prefixes
+
+  * eldenring
+      profile is `crossover`: a runtime with patches/0002 looks under `protium` — run `protium prefix migrate-user`
+    p2test
+```
+
+and the migration is a command you run:
+
+```
+$ protium prefix migrate-user eldenring
+In the prefix eldenring:
+  rename  drive_c/users/crossover -> drive_c/users/protium
+  rewrite user.reg
+  rewrite userdef.reg
+  rewrite system.reg
+
+Steam's sign-in and its CEF cache live under drive_c/users/crossover/AppData/Local/Steam,
+and move with the profile.
+
+Migrate this prefix? [y/N]
+```
+
+**protium does not migrate a prefix on its own, and `run` does not refuse to
+launch one.** Two reasons, and they are different:
+
+* Migrating renames a directory holding somebody's game installs and rewrites
+  three registry files. That is not something to do as a side effect of a
+  launch that was asked for. The same rule already governs everything else
+  here: `status` names the next step rather than taking it.
+* `run` cannot tell whether the runtime it is about to use carries
+  `patches/0002` — the state lives in the prefix, the patch lives in the Wine.
+  A prefix on the old name is *correct* for `wine-11.0-cx26.3-p1` and only
+  wrong for `-p2`, so refusing would break a working setup to prevent a
+  problem that setup does not have. `prefix list` reports the state and leaves
+  the judgement where the information is.
+
+The command refuses more than it does:
+
+| State | What happens |
+| --- | --- |
+| profile is already `protium` | says so, exits 0 — safe to run twice |
+| both profiles exist | **refused.** The `protium` one is the empty profile a patched Wine made; merging two `AppData` trees is a judgement about your saved games, so it is left to you |
+| neither exists | refused — the prefix was never booted |
+| the prefix is running | refused. `wineserver` holds the registry in memory and writes it back out when the last process leaves, so a rewrite done underneath it is lost on shutdown. Stop it with `protium prefix stop` first |
+
+Every registry file is read and transformed in memory before anything on disk
+moves, so a file that cannot be read stops the migration while the prefix is
+still wholly the old one; only the writes follow the rename.
+
+The rewrite matches two token shapes rather than the bare name — the escaped
+path segment `\\users\\crossover`, and the value `"USERNAME"="crossover"` — so
+a game installed in a directory called `crossover` is left alone. In the Elden
+Ring prefix that is 33 occurrences in `user.reg`, 26 in `userdef.reg` and 3 in
+`system.reg`: the Shell Folders set, the `Volatile Environment` block, and
+`ProfileImagePath` with two copies of `Common Favorites`. The rules are in
+`src/profile.zig` and tested there.
+
+### `CX_REPORT_REAL_USERNAME` is not a way back
+
+CrossOver's advapi32 hack yields to that variable and returns the Unix account
+instead; the shell32 site does not read it at all. Setting it therefore moves
+`%USERNAME%` and leaves the profile directory where it is. That divergence is
+inherited rather than introduced — CrossOver has it already — and protium never
+sets the variable. `patches/0002` keeps the name hardcoded on purpose: the
+prefix layout is then the same on every machine regardless of the Unix account,
+which is the property CodeWeavers were after and the one protium wants too.

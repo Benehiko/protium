@@ -1,0 +1,72 @@
+advapi32,shell32: Report the Windows user as "protium", not "crossover".
+
+CrossOver Hack 12735 pins the Windows user name to "crossover" so that a
+bottle's profile path is the same on every machine. crossover-sources-26.3.0
+carries it in three places, all commented with that bug number: GetUserNameA
+and GetUserNameW in dlls/advapi32/advapi.c, which short-circuit ahead of the
+WINEUSERNAME lookup unless CX_REPORT_REAL_USERNAME is set in the environment,
+and the %USERPROFILE% branch of _SHExpandEnvironmentStrings in
+dlls/shell32/shellpath.c. A protium prefix built from nothing therefore has
+its profile at C:\users\crossover and reports crossover from cmd's %USERNAME%.
+
+The third site is the one that decides the directory name, and it is
+independent of the other two. The profile path does not follow from
+GetUserName, and it does not follow from the Unix user either: CSIDL_PROFILE
+is a CSIDL_Type_User folder with no parent, so _SHGetDefaultValue returns the
+literal "%USERPROFILE%", and _SHExpandEnvironmentStrings expands that by
+appending its own hardcoded userName[] to the ProfilesDirectory prefix. The
+name is spelled as a character array rather than a string literal, which is
+why grepping the tree for "crossover" does not find it. wineboot reaches this
+through SHGetFolderPathW( CSIDL_PROFILE ) and writes the answer to
+USERPROFILE, HOMEPATH and HOMEDRIVE; it writes USERNAME from GetUserNameW
+separately. Patching advapi32 alone would rename the reported user and leave
+the directory at crossover.
+
+Keeping the name hardcoded, rather than restoring upstream's GetUserNameW call
+in shell32, is deliberate: the prefix layout stays the same on every machine
+regardless of the Unix account, which is the property the CodeWeavers hack was
+after and the one protium wants too. It also leaves shell32 independent of
+CX_REPORT_REAL_USERNAME, so setting that variable moves %USERNAME% to the Unix
+account while the profile directory stays C:\users\protium. That divergence is
+inherited from CrossOver, which has it already; protium does not set the
+variable.
+
+Applies to crossover-sources-26.3.0 (wine-11.0), on top of 0001.
+
+--- a/dlls/advapi32/advapi.c
++++ b/dlls/advapi32/advapi.c
+@@ -51,8 +51,8 @@
+     /* CrossOver Hack 12735: Use a consistent username */
+     if (!getenv( "CX_REPORT_REAL_USERNAME" ))
+     {
+-        len = sizeof("crossover");
+-        if ((ret = (len <= *size))) strcpy( name, "crossover" );
++        len = sizeof("protium");
++        if ((ret = (len <= *size))) strcpy( name, "protium" );
+         else SetLastError( ERROR_INSUFFICIENT_BUFFER );
+         *size = len;
+         return ret;
+@@ -76,8 +76,8 @@
+     /* CrossOver Hack 12735: Use a consistent username */
+     if (!getenv( "CX_REPORT_REAL_USERNAME" ))
+     {
+-        len = ARRAY_SIZE( L"crossover" );
+-        if ((ret = (len <= *size))) wcscpy( name, L"crossover" );
++        len = ARRAY_SIZE( L"protium" );
++        if ((ret = (len <= *size))) wcscpy( name, L"protium" );
+         else SetLastError( ERROR_INSUFFICIENT_BUFFER );
+         *size = len;
+         return ret;
+--- a/dlls/shell32/shellpath.c
++++ b/dlls/shell32/shellpath.c
+@@ -2632,8 +2632,8 @@
+         }
+         else if (!wcsnicmp(szTemp, L"%USERPROFILE%", lstrlenW(L"%USERPROFILE%")))
+         {
+-            /* CrossOver Hack 12735 */
+-            static const WCHAR userName[] = {'c','r','o','s','s','o','v','e','r',0};
++            /* CrossOver Hack 12735, with protium's name in place of theirs. */
++            static const WCHAR userName[] = {'p','r','o','t','i','u','m',0};
+ 
+             lstrcpyW(szDest, szProfilesPrefix);
+             PathAppendW(szDest, userName);

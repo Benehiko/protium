@@ -180,6 +180,7 @@ protium prefix list                    # your prefixes; * is the default
 protium prefix new skyrim              # another one
 protium prefix stop                    # shut down the Wine running in one
 protium prefix remove skyrim           # delete one, after showing what goes
+protium prefix migrate-user            # move an old prefix onto the protium user
 protium use skyrim                     # make it the default
 
 protium install clean                  # delete the installers it downloaded
@@ -197,6 +198,14 @@ out of the prefix, then asks. It never follows one of those links: a prefix
 can hold a link into somebody else's Steam library, and only the link goes.
 `--force` answers the question and nothing more — a prefix with Wine running
 in it is refused either way, with the `prefix stop` line to run first.
+
+The Windows user inside a prefix is `protium`, and its profile is
+`C:\users\protium`. A prefix made before that change keeps the old
+`crossover` profile, which a current runtime will not find — Steam comes up
+signed out, because its credentials live in there. `protium prefix list` says
+so when it sees one, and `protium prefix migrate-user` moves it; protium never
+does that on its own. See
+**[docs/prefixes.md](docs/prefixes.md#the-windows-user-is-protium)**.
 
 ## How it works
 

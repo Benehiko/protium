@@ -11,16 +11,18 @@ sign-in bug was found, the decisive step was reading `GetLogicalDrives` and
 ([`steam-login.md`](steam-login.md#wines-source-kept-this-time-says-what-that-means)),
 and the recipe as first written had deleted it. `~/.local/share/protium/build`
 is where it lives on the machine this was verified on — `wine/` is the tree,
-`build-p1/` the out-of-tree build, `tools/` and `llvm-mingw/` the toolchain.
+`build-p1/` and `build-p2/` the out-of-tree builds, `tools/` and `llvm-mingw/`
+the toolchain.
 
 *Verified end to end on 2026-09-05, against an M4 Mac running macOS 26.6.1
 with Xcode 26.6 / Apple clang 21, and again on 2026-09-08 (macOS 26.6.2 build
 25G83, Xcode 26.6 build 17F113, Apple clang 21.0.0 `clang-2100.1.1.101`,
-llvm-mingw 20260826 = clang 23.1.0, bison 3.8.2) with the patch below
-applied.* That is a record of two runs rather than a requirement: nothing in
-the recipe is pinned to those versions, and anything below that turns out to be
-is a bug worth reporting — except the compiler *family* of the PE side, which
-is load-bearing; see [The PE compiler decides
+llvm-mingw 20260826 = clang 23.1.0, bison 3.8.2) with `patches/0001` applied,
+and a third time the same day for `wine-11.0-cx26.3-p2`, with 0001 and 0002
+both applied.* That is a record of three runs rather than a requirement:
+nothing in the recipe is pinned to those versions, and anything below that
+turns out to be is a bug worth reporting — except the compiler *family* of the
+PE side, which is load-bearing; see [The PE compiler decides
 more than it looks](#the-pe-compiler-decides-more-than-it-looks).
 
 ## Where the source comes from
@@ -119,7 +121,7 @@ configure reports `whether we are cross compiling... no` and runs its probes
 normally. Building an x86-64 Wine on an arm64 Mac is not a cross-compile in
 practice.
 
-## Two source patches
+## Three source patches
 
 ### `patches/0001-ntdll-test-only-the-byte-of-a-BOOLEAN-syscall-argument.patch`
 
@@ -136,6 +138,30 @@ test the byte rather than the register. Checked with the same Apple clang at
 `-O2`: the unpatched function compiles to `testl %r8d, %r8d`, the patched one
 to `testb %r8b, %r8b`. The patch header says why; the section above says what
 it costs not to have it.
+
+### `patches/0002-advapi32-shell32-report-the-Windows-user-as-protium.patch`
+
+Apply it after 0001, from the same directory:
+
+```sh
+cd $SCRATCH/wine && patch -p1 < /path/to/protium/patches/0002-advapi32-shell32-report-the-Windows-user-as-protium.patch
+```
+
+It replaces the hardcoded Windows user `crossover` with `protium` in the three
+places CodeWeavers pin it — `GetUserNameA` and `GetUserNameW` in
+`dlls/advapi32/advapi.c`, and the `%USERPROFILE%` expansion in
+`dlls/shell32/shellpath.c` that decides the profile *directory*. All three
+carry the comment `CrossOver Hack 12735`; the shell32 one spells the name as a
+character array, so grepping the tree for `crossover` finds only two of them.
+Without the third, a prefix reports `protium` and still keeps its profile at
+`C:\users\crossover`.
+
+A prefix created by a runtime without this patch has to be migrated before a
+runtime with it will find its profile — Steam's sign-in lives inside it. The
+patch header says why the name stays hardcoded rather than following
+`GetUserName`, and
+[`prefixes.md`](prefixes.md#the-windows-user-is-protium) covers the migration
+and `protium prefix migrate-user`.
 
 ### `SONAME_LIBVULKAN`
 
@@ -255,9 +281,14 @@ make install prefix="$root/runtimes/wine-11.0-cx26.3"
 Install it under `runtimes/` in protium's root and protium finds it without
 being told; the last path component is the name it will be known by. A build
 with protium's patches applied is named for its patch level —
-`wine-11.0-cx26.3-p1` is the first — and installed **beside** the unpatched
-one, never over it, so that `protium run --runtime <name>` can A/B the two from
-the same prefix. The `root`
+`wine-11.0-cx26.3-p1` carries `patches/0001`, `-p2` carries 0001 and 0002 —
+and installed **beside** the unpatched one, never over it, so that `protium
+run --runtime <name>` can A/B the two from the same prefix. Note that a prefix
+cannot always be shared across that
+boundary: `-p2` changes the Windows user, so a prefix made by `-p1` needs
+`protium prefix migrate-user` before `-p2` will find its profile, and once
+migrated `-p1` will not — see
+[`prefixes.md`](prefixes.md#the-windows-user-is-protium). The `root`
 line above is protium's own rule spelled out — `$PROTIUM_HOME`, else
 `$XDG_DATA_HOME/protium`, else `$HOME/.local/share/protium` — so someone who
 keeps the 1.1 GB tree on another disk sets `PROTIUM_HOME` and changes nothing

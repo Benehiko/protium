@@ -20,6 +20,7 @@ pub const fetch = @import("fetch.zig");
 pub const pe = @import("pe.zig");
 pub const teardown = @import("teardown.zig");
 pub const removal = @import("removal.zig");
+pub const profile = @import("profile.zig");
 
 test {
     _ = semver;
@@ -37,4 +38,5 @@ test {
     _ = pe;
     _ = teardown;
     _ = removal;
+    _ = profile;
 }

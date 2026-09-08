@@ -26,6 +26,7 @@ const fetch = @import("fetch.zig");
 const pe = @import("pe.zig");
 const teardown = @import("teardown.zig");
 const removal = @import("removal.zig");
+const profile = @import("profile.zig");
 
 /// The stand-in `steamwebhelper.exe`, built for x86_64-windows from
 /// `src/webhelper.zig` by this repository's own `build.zig` and embedded here.
@@ -54,6 +55,7 @@ const usage =
     \\  protium prefix new <name>         Create a prefix and boot it.
     \\  protium prefix stop [<name>]      Shut down the Wine running in a prefix.
     \\  protium prefix remove <name>      Delete a prefix and everything in it.
+    \\  protium prefix migrate-user       Move an old prefix onto the protium profile.
     \\  protium use <name>                Make a prefix the default.
     \\  protium env                       Print the environment, as shell code.
     \\
@@ -544,8 +546,9 @@ fn runPrefix(
     if (std.mem.eql(u8, sub, "new")) return prefixNew(arena, io, vars, rest, w);
     if (std.mem.eql(u8, sub, "stop")) return prefixStop(arena, io, vars, rest, w);
     if (std.mem.eql(u8, sub, "remove")) return prefixRemove(arena, io, vars, rest, w);
+    if (std.mem.eql(u8, sub, "migrate-user")) return prefixMigrateUser(arena, io, vars, rest, w);
 
-    try w.print("protium prefix: no such subcommand `{s}` — try `list`, `new`, `stop` or `remove`\n", .{sub});
+    try w.print("protium prefix: no such subcommand `{s}` — try `list`, `new`, `stop`, `remove` or `migrate-user`\n", .{sub});
     return 2;
 }
 
@@ -576,11 +579,13 @@ fn prefixList(
         const is_default = active != null and std.mem.eql(u8, active.?.name, name);
         const dir = try sess.join(&.{ sess.root, layout.prefixes, name });
         const booted = sess.exists(try sess.join(&.{ dir, layout.boot_marker }));
+        const stale = sess.exists(try sess.join(&.{ dir, profile.legacy_dir }));
         try w.print("  {s} {s}{s}\n", .{
             if (is_default) "*" else " ",
             name,
             if (booted) "" else "   (never finished booting)",
         });
+        if (stale) try w.print("      {s}\n", .{profile.instruction});
     }
     try w.writeAll("\n`*` is the default. Change it with: protium use <name>\n");
     return 0;
@@ -1157,6 +1162,122 @@ fn prefixRemove(
             try w.writeAll("Choose the next one with: protium use <name>\n");
         }
     }
+    return 0;
+}
+
+/// `protium prefix migrate-user` — move a prefix made by an unpatched Wine
+/// onto the profile name `patches/0002` gives.
+///
+/// This is a command rather than something `run` does on its own. It renames
+/// a directory holding somebody's game installs and rewrites three registry
+/// files, and protium does not do that as a side effect of a launch that was
+/// asked for; the rule is the same one `status` follows when it names the
+/// step rather than taking it.
+fn prefixMigrateUser(
+    arena: std.mem.Allocator,
+    io: Io,
+    vars: *std.process.Environ.Map,
+    args: []const []const u8,
+    w: *Io.Writer,
+) !u8 {
+    var opts = try parseOptions(arena, args, false);
+    if (opts.bad) |b| return reportBadOption(w, "prefix migrate-user", b);
+    if (opts.positional.len > 0) opts.prefix = opts.positional[0];
+
+    const sess = session.Session.open(arena, io, vars) catch |err| switch (err) {
+        error.NoHome => {
+            try w.writeAll("protium: no HOME, and no PROTIUM_HOME to use instead\n");
+            return 1;
+        },
+        else => |e| return e,
+    };
+    const px = sess.prefix(opts.prefix) catch |err| {
+        try reportUnresolved(sess, w, layout.prefixes, "prefix", opts.prefix, err);
+        return 1;
+    };
+
+    const from = try sess.join(&.{ px.dir, profile.legacy_dir });
+    const to = try sess.join(&.{ px.dir, profile.dir });
+    const p = profile.plan(sess.exists(from), sess.exists(to));
+
+    if (p == .done) {
+        try w.print("The prefix {s} already keeps its profile at {s}. Nothing to do.\n", .{
+            px.name, profile.dir,
+        });
+        return 0;
+    }
+    if (profile.planProblem(p)) |problem| {
+        try w.print("protium prefix migrate-user: {s}\n", .{problem});
+        return 1;
+    }
+
+    // A running Wine is refused, not stopped. `wineserver` holds the registry
+    // in memory and writes it back out when the last process leaves, so a
+    // rewrite done underneath it is overwritten on shutdown and the prefix
+    // comes back pointing at a directory that is no longer there.
+    const server_pid = try findServer(arena, px.dir, w);
+    const running = try prefixProcesses(arena, px.dir, server_pid);
+    if (server_pid != null or running.len > 0) {
+        try w.print(
+            "The prefix {s} is running, and Wine writes the registry back out when it stops.\n" ++
+                "\nStop it first:\n\n  protium prefix stop {s}\n\nNothing was changed.\n",
+            .{ px.name, px.name },
+        );
+        return 1;
+    }
+
+    try w.print("In the prefix {s}:\n", .{px.name});
+    try w.print("  rename  {s} -> {s}\n", .{ profile.legacy_dir, profile.dir });
+    for (profile.registry_files) |name| {
+        try w.print("  rewrite {s}\n", .{name});
+    }
+    try w.print("\nSteam's sign-in and its CEF cache live under {s}/AppData/Local/Steam,\n", .{profile.legacy_dir});
+    try w.writeAll("and move with the profile.\n\n");
+
+    if (!opts.force) {
+        if (!try confirm(io, w, "Migrate this prefix?")) {
+            try w.writeAll("Nothing was changed.\n");
+            return 1;
+        }
+    }
+
+    // Every file is read and transformed before anything on disk moves, so a
+    // registry protium cannot parse or cannot read stops the migration while
+    // the prefix is still wholly the old one. Only the writes follow the
+    // rename, and they are writes of bytes already in hand.
+    var rewritten: [profile.registry_files.len]?[]u8 = @splat(null);
+    for (profile.registry_files, 0..) |name, i| {
+        const path = try sess.join(&.{ px.dir, name });
+        const text = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(1 << 26)) catch |err| switch (err) {
+            error.FileNotFound => continue,
+            else => {
+                try w.print("protium prefix migrate-user: cannot read {s} — {s}\n", .{ path, @errorName(err) });
+                try w.writeAll("Nothing was changed.\n");
+                return 1;
+            },
+        };
+        rewritten[i] = try profile.rewriteRegistry(arena, text);
+    }
+
+    Io.Dir.cwd().rename(from, Io.Dir.cwd(), to, io) catch |err| {
+        try w.print("protium prefix migrate-user: cannot rename {s} — {s}\n", .{ from, @errorName(err) });
+        try w.writeAll("Nothing was changed.\n");
+        return 1;
+    };
+
+    for (profile.registry_files, 0..) |name, i| {
+        const data = rewritten[i] orelse continue;
+        const path = try sess.join(&.{ px.dir, name });
+        Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = data }) catch |err| {
+            try w.print("protium prefix migrate-user: {s} was renamed, but {s} could not be written — {s}\n", .{
+                profile.legacy_dir, path, @errorName(err),
+            });
+            try w.writeAll("The prefix is half-migrated. Fix the write and run this again.\n");
+            return 1;
+        };
+    }
+
+    try w.print("Migrated {s}. Its Windows user is now {s}.\n", .{ px.name, profile.user });
     return 0;
 }
 
