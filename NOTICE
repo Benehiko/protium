@@ -3,10 +3,19 @@ Copyright 2026 Alano Terblanche
 
 This product is licensed under the Apache License, Version 2.0 (see LICENSE).
 
-protium distributes no third-party code. It builds and installs software you
-obtain yourself — Wine from CodeWeavers' published CrossOver sources, and
-D3DMetal from Apple's Game Porting Toolkit — neither of which is redistributed
-by this repository or by anything built from it.
+protium builds and installs software you obtain yourself — Wine from
+CodeWeavers' published CrossOver sources, and D3DMetal from Apple's Game
+Porting Toolkit — neither of which is redistributed by this repository or by
+anything built from it.
+
+Two things in a protium binary are not covered by the Apache License:
+
+  * the Wine source patches in patches/, which protium embeds and applies.
+    They modify Wine and are licensed, like Wine, under the GNU Lesser General
+    Public License, version 2.1 or later (licenses/LGPL-2.1.txt).
+  * Zig's standard library, compiled in, under the MIT License
+    (licenses/zig-MIT.txt in a release archive). Copyright (c) Zig
+    contributors.
 
 The terms those components carry, with the versions and evidence behind each
 claim, are recorded in THIRD-PARTY-NOTICES.md.

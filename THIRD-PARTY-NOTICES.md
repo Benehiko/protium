@@ -4,14 +4,31 @@ protium's own code is Apache 2.0 (`LICENSE`, `NOTICE`). This file covers
 everything else — the software protium builds, installs and launches but does
 not own.
 
-## What protium distributes: nothing
+## What protium distributes
 
 This is the load-bearing fact, so it goes first. `build.zig.zon` declares no
-dependencies, every file under `src/` is original to this repository, and the
-binary links nothing but Zig's standard library. protium does not vendor,
-bundle, mirror or redistribute any third-party code.
+dependencies and every file under `src/` is original to this repository.
+protium does not vendor, bundle or mirror Wine, D3DMetal or anything else it
+assembles. A protium binary contains exactly three things that are not
+Apache-2.0-only protium code:
 
-What it does instead:
+* **Zig's standard library**, compiled in, under Zig's MIT licence — see
+  [Zig](#zig-standard-library) below.
+* **The Wine patches in `patches/`**, embedded as text so `protium build` can
+  apply them without a checkout beside it (`addPatches` in `build.zig`). A
+  patch is a change to Wine's LGPL source and quotes Wine's own lines as
+  context, so the patches are **LGPL-2.1-or-later**, like the files they
+  change — see [patches/README.md](patches/README.md). They are carried in
+  source form, which is the form the LGPL asks for.
+* **The `steamwebhelper.exe` stand-in**, built from `src/webhelper.zig`. That
+  is protium's own code, and is Apache 2.0.
+
+A release archive (`make release`, [docs/releasing.md](docs/releasing.md))
+carries the licence text for each: `LICENSE` and `NOTICE`,
+`licenses/LGPL-2.1.txt` with the patches beside it in `patches/`, and
+`licenses/zig-MIT.txt` taken from the Zig toolchain that built the binary.
+
+What protium does with the rest, instead of shipping it:
 
 * **Wine** — prints a recipe (`docs/wine-build.md`) that *you* run against
   sources *you* download. protium never links Wine; it executes `wine` as a
@@ -20,7 +37,8 @@ What it does instead:
   after checking its shape (`src/redist.zig`). It never contains a copy.
 
 So no third-party licence imposes conditions on protium's own source, and
-nothing here is a combined or derivative work. The obligations below attach to
+protium is not a combined or derivative work of Wine or D3DMetal: the patches
+are the one piece of Wine it carries, and they stay under Wine's licence. The obligations below attach to
 the artefacts on your disk after you follow the recipe, and they are yours from
 that point on.
 
@@ -75,6 +93,19 @@ framework, one shared library, and six PE shims each paired with a unix-side
 symlink. `src/redist.zig` verifies that shape rather than a fixed file list,
 because the list changes between releases.
 
+## Zig standard library
+
+| | |
+| --- | --- |
+| **Licence** | MIT (Expat) |
+| **Text** | `LICENSE` at the root of the Zig installation; shipped as `licenses/zig-MIT.txt` in every release archive |
+| **Version** | Zig 0.16.0 |
+| **Copyright** | Zig contributors |
+
+The only third-party code linked into the protium binary. MIT asks that its
+notice travel with copies, so `make release` copies it from the toolchain that
+did the build, and refuses to package without it.
+
 ## Build-time tools
 
 These build Wine. None is linked into protium, none is distributed by it, and
@@ -88,7 +119,7 @@ listed here for completeness rather than obligation.
 | llvm-mingw | `…-ucrt-macos-universal` release, `mstorsjo/llvm-mingw` | A bundle, not one licence: LLVM/clang/lld are Apache-2.0 WITH LLVM-exception; the mingw-w64 runtime and headers carry their own permissive terms. Consult the `LICENSE*` files inside the unpacked release. |
 | FreeType | 2.13.3 | Dual: the FreeType License (BSD-style, requires attribution) or GPL-2.0-or-later, at your choice. |
 | Apple clang / Xcode command line tools | as installed | Apple's, per Xcode's agreement. |
-| Zig | 0.16.0 or newer | MIT. Builds protium itself; not part of the Wine recipe. |
+| Zig | 0.16.0 or newer | MIT. Builds protium itself; not part of the Wine recipe. Its standard library is linked in — see above. |
 
 Licences for the first three are stated from their upstream projects' published
 terms, not verified against a tree on this machine — the recipe deliberately
