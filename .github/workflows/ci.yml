@@ -9,11 +9,11 @@ jobs:
   build:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # v2, not v1: from 0.14.1 on Zig's tarballs are named
       # `zig-<arch>-<os>-<version>`, and v1 still asks for the old
       # `zig-<os>-<arch>` name, which 404s on every mirror.
-      - uses: mlugg/setup-zig@v2
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.16.0
       - name: format

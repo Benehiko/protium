@@ -25,7 +25,7 @@ jobs:
       VERSION: ${{ github.ref_name }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The whole history, so the next step can ask whether the tag is on
           # main.
@@ -46,7 +46,7 @@ jobs:
             exit 1
           }
 
-      - uses: mlugg/setup-zig@v2
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.16.0
       # Pinned to a commit: this action puts the signing tool on the machine,
