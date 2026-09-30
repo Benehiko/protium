@@ -29,6 +29,7 @@ const removal = @import("removal.zig");
 const profile = @import("profile.zig");
 const recipe = @import("recipe.zig");
 const complete = @import("complete.zig");
+const steamapp = @import("steamapp.zig");
 
 /// The stand-in `steamwebhelper.exe`, built for x86_64-windows from
 /// `src/webhelper.zig` by this repository's own `build.zig` and embedded here.
@@ -59,6 +60,8 @@ const usage =
     \\                                    <program> is a path, an installed
     \\                                    name such as `steam`, or the file
     \\                                    name of an .exe in the prefix.
+    \\                                    A Steam game gets its SteamAppId
+    \\                                    from Steam's manifest.
     \\  protium prefix list               Show the prefixes and which is default.
     \\  protium prefix new <name>         Create a prefix and boot it.
     \\  protium prefix stop [<name>]      Shut down the Wine running in a prefix.
@@ -1633,6 +1636,17 @@ fn runLaunch(
 
     const target = try launchTarget(arena, io, res, opts.positional[0], w) orelse return 1;
 
+    // A Steam game started directly needs its app ID, and Steam's own
+    // manifest says what it is. One already set, by the person or the
+    // prefix's protium.conf, is left alone.
+    if (vars.get("SteamAppId") == null) {
+        const host = catalog.hostPath(arena, res.prefix.dir, target.program) catch target.program;
+        if (try steamapp.appId(arena, io, host)) |id| {
+            try vars.put("SteamAppId", id);
+            try w.print("protium run: SteamAppId={s}, from Steam's manifest for this game\n", .{id});
+        }
+    }
+
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.append(arena, loader);
     try argv.append(arena, target.program);
@@ -2903,10 +2917,11 @@ fn applyNeeds(
 /// Can this prefix run the thing that was just downloaded?
 ///
 /// A prefix has a 32-bit side exactly when its `syswow64` holds modules.
-/// `protium prefix new` produces one that does not — `wineboot` stops before
-/// it fills that directory — so a 32-bit installer in a protium-made prefix
+/// On 2026-09-06 `protium prefix new` produced prefixes whose `syswow64` was
+/// empty, because `wineboot` stopped before filling it; since 2026-09-07 it
+/// fills it, for reasons not measured. A 32-bit installer in an empty one
 /// cannot run, and says so in Wine's terms rather than protium's when it
-/// tries. See docs/install.md.
+/// tries, so this check stays. See docs/install.md.
 ///
 /// Anything that is not a PE file is passed through rather than refused: an
 /// installer format protium does not recognise is the vendor's business, and
@@ -2930,9 +2945,11 @@ fn checkArch(
     });
     try w.print(
         \\{s}
-        \\is empty. Wine populates it while `wineboot` sets a prefix up, and on this
-        \\build that step does not finish, so nothing 32-bit can start — the loader
+        \\is empty. Wine populates it while `wineboot` sets a prefix up, and here
+        \\that step did not finish, so nothing 32-bit can start — the loader
         \\reports `could not load kernel32.dll` and the installer exits.
+        \\A prefix created again with `protium prefix new` has filled it on this
+        \\runtime since 2026-09-07.
         \\
         \\The Wine itself is not the problem: its lib/wine/i386-windows tree is
         \\complete, and 32-bit programs do run in a prefix whose syswow64 was filled

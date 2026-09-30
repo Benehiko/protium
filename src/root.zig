@@ -23,6 +23,7 @@ pub const removal = @import("removal.zig");
 pub const profile = @import("profile.zig");
 pub const recipe = @import("recipe.zig");
 pub const complete = @import("complete.zig");
+pub const steamapp = @import("steamapp.zig");
 
 test {
     _ = semver;
@@ -43,4 +44,5 @@ test {
     _ = profile;
     _ = recipe;
     _ = complete;
+    _ = steamapp;
 }
