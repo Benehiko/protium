@@ -3,7 +3,7 @@
 # full test suite runs in CI, so committing never blocks for minutes.
 set -e
 
-# No Python. The language here is Zig -- built, tested, formatted. See CLAUDE.md.
+# No Python. The language here is Zig -- built, tested, formatted. See AGENTS.md.
 staged_py=$(git diff --cached --name-only --diff-filter=A | grep '\.py$' || true)
 if [ -n "$staged_py" ]; then
     echo "pre-commit: refusing to add $staged_py — this repository is Zig, not Python." >&2

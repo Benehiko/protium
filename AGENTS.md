@@ -44,7 +44,21 @@ taken on trust. Two rules follow:
 
 ## Commits
 
-Conventional prefixes (`feat:`, `fix:`, `refactor:`, `docs:`, `test:`,
-`perf:`). Commit directly to `main` — no feature branches. Code, tests and docs
-for one change go in one commit. Run `zig fmt` before committing; the
-pre-commit hook rejects unformatted files and will not re-stage them for you.
+* **Always commit on a new branch, never on `main`.** Start it from an
+  up-to-date `main` (`git switch main && git pull --ff-only && git switch -c
+  <name>`), one branch per change, so each one merges on its own as a pull
+  request.
+* **Format and build before every commit**, whatever the change touches:
+
+  ```sh
+  zig fmt .
+  zig build; echo $?
+  ```
+
+  Both must succeed, with the exit status read from `zig build` itself (see
+  "Verify a green build properly" above). Run `zig build test` too when code
+  changed. The pre-commit hook checks formatting and builds only when a
+  `.zig` file is staged, and it never re-stages a file it would have
+  reformatted, so it is a backstop and not a substitute.
+* Conventional prefixes (`feat:`, `fix:`, `refactor:`, `docs:`, `test:`,
+  `perf:`). Code, tests and docs for one change go in one commit.
