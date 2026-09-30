@@ -51,7 +51,7 @@ jobs:
           version: 0.16.0
       - uses: sigstore/cosign-installer@v4
 
-      # Refuses a tag that disagrees with `protium_version` in src/main.zig.
+      # The tag is the version: it is passed to the build as -Dversion.
       - name: package
         run: make package VERSION="$VERSION"
 

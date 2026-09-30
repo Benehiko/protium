@@ -35,7 +35,8 @@ const complete = @import("complete.zig");
 /// Nothing is vendored: it is compiled from source beside everything else.
 const webhelper_shim = @embedFile("webhelper_shim");
 
-const protium_version = "0.1.0";
+/// Set by `-Dversion=` (see build.zig); "dev" for a plain `zig build`.
+const protium_version = @import("build_options").version;
 
 /// Rosetta 2's runtime lives here when it is installed, and nowhere else.
 const rosetta_marker = "/Library/Apple/usr/libexec/oah";
