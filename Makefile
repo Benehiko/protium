@@ -14,10 +14,11 @@ test:
 DIST ?= dist
 VERSION ?=
 
-# The version protium prints for `protium version`. A release tag is `v` plus
-# this, and `package` refuses anything else: an archive named v0.2.0 holding a
-# binary that says 0.1.0 is worse than no release.
-SOURCE_VERSION := $(shell sed -n 's/^const protium_version = "\(.*\)";/\1/p' src/main.zig)
+# The version protium prints for `protium version`: the tag without its `v`,
+# passed to the build as -Dversion. `package` checks the built binary reports
+# it: an archive named v0.2.0 holding a binary that says 0.1.0 is worse than
+# no release.
+SOURCE_VERSION = $(patsubst v%,%,$(VERSION))
 
 # The supported hosts, as `<os>-<arch>`. Apple silicon only: `protium doctor`
 # refuses an Intel Mac (src/doctor.zig).
@@ -71,8 +72,7 @@ check-release:
 # one-line message to extend: the tag message becomes the release notes.
 tag:
 	@test -n "$(VERSION)" || { echo "make tag: set VERSION, e.g. make tag VERSION=v0.1.0" >&2; exit 1; }
-	@test "$(VERSION)" = "v$(SOURCE_VERSION)" || { \
-		echo "make tag: VERSION is $(VERSION), but src/main.zig says $(SOURCE_VERSION)" >&2; exit 1; }
+	@case "$(VERSION)" in v[0-9]*) ;; *) echo "make tag: VERSION must look like v0.1.0, not $(VERSION)" >&2; exit 1;; esac
 	@test -z "$$(git status --porcelain)" || { echo "make tag: the tree is dirty -- commit or stash first" >&2; exit 1; }
 	@! git rev-parse -q --verify "refs/tags/$(VERSION)" >/dev/null || { \
 		echo "make tag: $(VERSION) already exists -- delete it first, or pick another version" >&2; exit 1; }
@@ -87,8 +87,7 @@ tag:
 # signature: `release` adds both. Run on its own to try the packaging.
 package:
 	@test -n "$(VERSION)" || { echo "make package: set VERSION, e.g. make package VERSION=v0.1.0" >&2; exit 1; }
-	@test "$(VERSION)" = "v$(SOURCE_VERSION)" || { \
-		echo "make package: VERSION is $(VERSION), but src/main.zig says $(SOURCE_VERSION)" >&2; exit 1; }
+	@case "$(VERSION)" in v[0-9]*) ;; *) echo "make package: VERSION must look like v0.1.0, not $(VERSION)" >&2; exit 1;; esac
 	@test -n "$(ZIG_LICENSE)" && test -f "$(ZIG_LICENSE)" || { \
 		echo "make package: cannot find Zig's LICENSE near $(ZIG_LIB)" >&2; \
 		echo "  the standard library is linked in, so its licence must ship -- set ZIG_LICENSE=<path>" >&2; \
@@ -112,7 +111,7 @@ package-host:
 	@echo "--- $(HOST) ---"
 	@# An explicit target rather than native, so the binary is built for the
 	@# baseline every Apple silicon Mac has, not for this machine's CPU.
-	zig build $(RELEASE_FLAGS) -Dtarget=$(ZIG_TARGET_$(HOST)) --prefix $(DIST)/.build-$(HOST)
+	zig build $(RELEASE_FLAGS) -Dversion=$(SOURCE_VERSION) -Dtarget=$(ZIG_TARGET_$(HOST)) --prefix $(DIST)/.build-$(HOST)
 	mkdir -p $(STAGE)/licenses $(STAGE)/patches
 	cp $(DIST)/.build-$(HOST)/bin/protium $(STAGE)/
 	cp README.md LICENSE NOTICE THIRD-PARTY-NOTICES.md $(STAGE)/

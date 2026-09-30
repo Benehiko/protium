@@ -27,9 +27,10 @@ why each file above is there.
 
 ## Every release
 
-1. Bump `protium_version` in `src/main.zig` and `.version` in `build.zig.zon`,
-   commit, and push to `main`. `make package` refuses a `VERSION` that
-   disagrees with `src/main.zig`.
+1. Make sure what you want released is on `main`. There is no version to bump:
+   the tag is the version. `make package` passes it to the build as
+   `-Dversion=0.1.0` and checks the binary reports it. (`.version` in
+   `build.zig.zon` is not used for this; Zig requires it to be a literal.)
 
 2. `make tag VERSION=v0.1.0` — an annotated tag, locally. An editor opens:
    the tag message becomes the release notes, so write them there.

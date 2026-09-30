@@ -37,6 +37,12 @@ pub fn build(b: *std.Build) void {
     // whose signature does not match.
     const strip = b.option(bool, "strip", "Omit debug info from the protium binary");
 
+    // The version `protium version` prints. A release passes it from the tag
+    // (`make package`); a plain `zig build` is a development build.
+    const version = b.option([]const u8, "version", "Version protium reports (default: dev)") orelse "dev";
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "version", version);
+
     const exe = b.addExecutable(.{
         .name = "protium",
         .root_module = b.createModule(.{
@@ -53,6 +59,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = webhelper.getEmittedBin(),
     });
     addPatches(b, exe.root_module);
+    exe.root_module.addOptions("build_options", build_options);
     b.installArtifact(exe);
 
     const run = b.addRunArtifact(exe);
@@ -72,6 +79,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addPatches(b, tests.root_module);
+    tests.root_module.addOptions("build_options", build_options);
     b.step("test", "Run the tests").dependOn(&b.addRunArtifact(tests).step);
 }
 
