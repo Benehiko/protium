@@ -133,21 +133,52 @@ fn isNoise(name: []const u8) bool {
     return std.ascii.startsWithIgnoreCase(name, "unins");
 }
 
-const max_depth = 8;
 const max_programs = 5000;
 
+/// How far below a root a scan looks. Directories at depth `max_depth` and
+/// beyond are not opened; the root itself is depth 0.
+pub const Walk = struct {
+    max_depth: usize,
+    /// Skip a top-level `windows`: set for `drive_c`, whose `windows` holds
+    /// Windows' own programs, and not for a game library, where a directory
+    /// of that name would be a game.
+    skip_windows: bool = false,
+};
+
+/// `drive_c`. A Steam game's folder is five directories down
+/// (`Program Files (x86)/Steam/steamapps/common/<game>`), and an Unreal
+/// Engine game keeps its real executable three below that, in
+/// `<project>/Binaries/Win64`, which is depth 8.
+pub const drive_walk: Walk = .{ .max_depth = 9, .skip_windows = true };
+/// A Steam library's `steamapps/common`: the same reach as the library on C:.
+pub const library_walk: Walk = .{ .max_depth = 5 };
+/// One game's folder: the same reach again, from the game down.
+pub const game_walk: Walk = .{ .max_depth = 4 };
+
 /// Every `.exe` under `drive_c`, apart from Windows' own and uninstallers.
-///
-/// Symlinks are not followed: a prefix may link a drive letter or a game
-/// library to somewhere large, and Tab must not walk it. A game under Steam is
-/// six directories down, so the depth is generous; the count is capped so that
-/// a pathological tree still answers.
 pub fn scan(arena: std.mem.Allocator, io: Io, drive_c: []const u8) ![]const Program {
     var out: std.ArrayList(Program) = .empty;
-    var dir = Io.Dir.cwd().openDir(io, drive_c, .{ .iterate = true, .follow_symlinks = false }) catch return out.items;
-    defer dir.close(io);
-    try scanDir(arena, io, dir, drive_c, 0, &out);
+    try scanRoot(arena, io, drive_c, drive_walk, &out);
     return out.items;
+}
+
+/// Append every `.exe` under `root` to `out`, apart from uninstallers.
+///
+/// Symlinks below the root are not followed: a prefix may link a drive letter
+/// or a game library to somewhere large, and Tab must not walk it. The root
+/// itself is followed, because it was chosen on purpose, and a Steam library
+/// on another drive is reached through Wine's `dosdevices` link. The count is
+/// capped across every root, so that a pathological tree still answers.
+pub fn scanRoot(
+    arena: std.mem.Allocator,
+    io: Io,
+    root: []const u8,
+    walk: Walk,
+    out: *std.ArrayList(Program),
+) !void {
+    var dir = Io.Dir.cwd().openDir(io, root, .{ .iterate = true }) catch return;
+    defer dir.close(io);
+    try scanDir(arena, io, dir, root, 0, walk, out);
 }
 
 fn scanDir(
@@ -156,6 +187,7 @@ fn scanDir(
     dir: Io.Dir,
     dir_path: []const u8,
     depth: usize,
+    walk: Walk,
     out: *std.ArrayList(Program),
 ) !void {
     var it = dir.iterate();
@@ -170,15 +202,32 @@ fn scanDir(
                 });
             },
             .directory => {
-                if (depth + 1 >= max_depth or skipDir(depth, entry.name)) continue;
+                if (depth + 1 >= walk.max_depth) continue;
+                if (walk.skip_windows and skipDir(depth, entry.name)) continue;
                 var sub = dir.openDir(io, entry.name, .{ .iterate = true, .follow_symlinks = false }) catch continue;
                 defer sub.close(io);
                 const sub_path = try std.fs.path.join(arena, &.{ dir_path, entry.name });
-                try scanDir(arena, io, sub, sub_path, depth + 1, out);
+                try scanDir(arena, io, sub, sub_path, depth + 1, walk, out);
             },
             else => {},
         }
     }
+}
+
+/// `programs` without repeats. Two roots can reach the same file, as the
+/// Steam library on C: and `drive_c` itself do, and a Windows path in Steam's
+/// own files may differ in case from the directory on disk, which macOS
+/// treats as the same.
+pub fn dedupe(arena: std.mem.Allocator, programs: []const Program) ![]const Program {
+    var seen: std.StringHashMapUnmanaged(void) = .empty;
+    var out: std.ArrayList(Program) = .empty;
+    for (programs) |p| {
+        const key = try std.ascii.allocLowerString(arena, p.path);
+        const slot = try seen.getOrPut(arena, key);
+        if (slot.found_existing) continue;
+        try out.append(arena, p);
+    }
+    return out.items;
 }
 
 /// The distinct names in `programs`, ignoring case, sorted.
@@ -408,6 +457,43 @@ test "program names are distinct ignoring case, and sorted" {
     });
     try testing.expectEqual(@as(usize, 2), names.len);
     try testing.expectEqualStrings("A.exe", names[0]);
+}
+
+test "the drive scan reaches an Unreal game's executable, and stops below it" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const ue = "drive_c/Program Files (x86)/Steam/steamapps/common/Stray/Hk_project/Binaries/Win64";
+    try tmp.dir.createDirPath(io, ue);
+    try tmp.dir.writeFile(io, .{ .sub_path = ue ++ "/Stray-Win64-Shipping.exe", .data = "" });
+    try tmp.dir.createDirPath(io, "drive_c/1/2/3/4/5/6/7/8/9");
+    try tmp.dir.writeFile(io, .{ .sub_path = "drive_c/1/2/3/4/5/6/7/8/in.exe", .data = "" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "drive_c/1/2/3/4/5/6/7/8/9/out.exe", .data = "" });
+    try tmp.dir.createDirPath(io, "drive_c/windows/system32");
+    try tmp.dir.writeFile(io, .{ .sub_path = "drive_c/windows/system32/cmd.exe", .data = "" });
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const base = try tmp.dir.realPathFileAlloc(io, ".", a);
+    const drive_c = try std.fs.path.join(a, &.{ base, "drive_c" });
+
+    const names = try programNames(a, try scan(a, io, drive_c));
+    try testing.expectEqual(@as(usize, 2), names.len);
+    try testing.expectEqualStrings("in.exe", names[0]);
+    try testing.expectEqualStrings("Stray-Win64-Shipping.exe", names[1]);
+}
+
+test "dedupe drops a path seen before, ignoring case" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const out = try dedupe(arena.allocator(), &.{
+        .{ .name = "a.exe", .path = "/p/Games/a.exe" },
+        .{ .name = "a.exe", .path = "/p/games/a.exe" },
+        .{ .name = "a.exe", .path = "/q/a.exe" },
+    });
+    try testing.expectEqual(@as(usize, 2), out.len);
 }
 
 test "every shell but posix has a script that calls the completer" {
