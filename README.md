@@ -1,138 +1,144 @@
 # protium
 
-**Run Windows games on an Apple silicon Mac.** macOS only.
+Run Windows games on an Apple silicon Mac.
 
-> [!IMPORTANT]
-> **To just play a game this afternoon, buy
-> [CrossOver](https://www.codeweavers.com/crossover).** It ships both halves
-> pre-built and supported.
->
-> protium makes *you* download Apple's Game Porting Toolkit and build Wine from
-> source — about an hour, once. That is the point: you end up with an
-> environment you assembled and can inspect, costing nothing and phoning
-> nowhere.
+A Windows game needs two things macOS lacks: Windows itself, and a way to turn
+Direct3D into Metal. Wine provides the first and Apple's D3DMetal the second.
+Both are free, and neither comes packaged. protium builds Wine from
+CodeWeavers' published sources, installs D3DMetal into it, and manages the
+prefixes your games run in. It costs nothing and sends nothing anywhere.
 
-A Windows game needs two things macOS lacks: a Windows to run in, and something
-to turn Direct3D into Metal. Both are free — Wine from CodeWeavers' published
-sources, D3DMetal from Apple — and neither is packaged for you. protium
-assembles them, checks them, and gets out of the way.
+protium runs single-player games. Anti-cheat does not work.
 
-Single-player games only. No anti-cheat.
+> [!TIP]
+> To play tonight, buy [CrossOver](https://www.codeweavers.com/crossover)
+> instead. It ships Wine and D3DMetal prebuilt and supported. protium asks for
+> about an hour of setup, once, and leaves you with an environment you built
+> yourself and can inspect.
 
-## First step — install protium and build the environment
+## Quickstart
 
-**Get the dependencies first:**
+### 1. Get the prerequisites
 
-* [What the Wine build needs](docs/wine-build.md#toolchain) — bison, mingw-w64
-  and the rest. Nothing is installed onto your Mac; it all goes to a scratch
-  directory you delete afterwards.
-* Apple's free [Evaluation environment for Windows
-  games](https://developer.apple.com/games/game-porting-toolkit/), nested
-  inside the Game Porting Toolkit DMG. Needs a signed-in Apple developer
-  account; the exact URL tested, and why it may not resolve for you, are in
-  [docs/d3dmetal.md](docs/d3dmetal.md). protium does not redistribute it, so
-  you download it yourself.
-* [Zig](https://ziglang.org/download/) 0.16.0 or newer, to build protium.
-* Rosetta 2. D3DMetal is x86-64 only, so the whole Wine is
-  ([docs/d3dmetal.md](docs/d3dmetal.md)).
+* **Rosetta 2.** D3DMetal is x86-64 only, so the Wine is too
+  ([why](docs/d3dmetal.md)). Install it with
+  `softwareupdate --install-rosetta --agree-to-license`.
+* **The Wine build tools**, listed in
+  [docs/wine-build.md](docs/wine-build.md#toolchain). They go into a scratch
+  directory, not onto your Mac.
+* **Apple's Evaluation environment for Windows games**, inside the
+  [Game Porting Toolkit](https://developer.apple.com/games/game-porting-toolkit/)
+  DMG. Downloading it requires an Apple developer account. protium does not
+  redistribute it. [docs/d3dmetal.md](docs/d3dmetal.md) gives the URL we
+  tested and why it may not work for you.
 
-**Build protium:**
+### 2. Install protium
 
 ```sh
-git clone https://github.com/Benehiko/protium
-cd protium
-zig build --prefix ~/.local -Doptimize=ReleaseFast
+V=v0.1.0
+curl -LO https://github.com/Benehiko/protium/releases/download/$V/protium-$V-macos-aarch64.tar.gz
+tar -xzf protium-$V-macos-aarch64.tar.gz
+mkdir -p ~/.local/bin
+install -m 755 protium-$V-macos-aarch64/protium ~/.local/bin/protium
+protium version
 ```
 
-One binary, at `~/.local/bin/protium`.
+If `protium version` fails, add `~/.local/bin` to your `PATH`.
 
-> [!NOTE]
-> If `protium version` fails afterwards, `~/.local/bin` is not on your `PATH`.
+Every release is signed by the workflow that built it. The
+[release notes](https://github.com/Benehiko/protium/releases) show how to check
+the signature with cosign before you run anything. Files downloaded with
+`curl` skip macOS quarantine. If you download with a browser, the release notes
+also explain how to clear it.
 
-**Then build the environment, in order:**
+### 3. Build the environment
 
-| | Command | Takes |
-| --- | --- | --- |
-| 1 | `protium doctor` — checks every prerequisite at once | seconds |
-| 2 | `protium build` — fetches CodeWeavers' sources and builds Wine | ~10 minutes, unattended |
-| 3 | `protium redist "/Volumes/…/redist/lib" --into ~/.local/share/protium/runtimes/<name>/lib` | minutes |
-| 4 | `protium prefix new default` | minutes |
-| 5 | `protium shell-init` — prints one line for your shell's rc file | seconds |
+```sh
+protium doctor               # check the prerequisites
+protium build                # build Wine; about 10 minutes, unattended
+protium redist "/Volumes/…/redist/lib" --into ~/.local/share/protium/runtimes/<name>/lib
+protium prefix new default   # create a Windows prefix
+protium shell-init           # print a line to add to your shell's rc file
+```
 
-Step 2 is the recipe in **[docs/wine-build.md](docs/wine-build.md)** carried
-out for you. Read that document anyway: it is written out command by command,
-it explains why each step is the way it is, and it includes the three mistakes
-that each cost an hour to find. It also covers the one part `protium build`
-does not do — the x86-64 FreeType and GnuTLS it needs, which it checks for and
-names rather than guessing at. Step 4 offers step 2 if you skipped it.
+Run `protium status` at any point to see where you are and what comes next.
 
 > [!WARNING]
-> Step 3 has two possible install methods, and **one of them destroys the Wine
-> you just spent an hour building**. protium looks at the destination and
-> prints the correct one — read what it prints before running it.
+> `protium redist` offers two install methods, and **one destroys the Wine you
+> just built**. protium inspects the destination and prints the right one.
+> Read it before you run it.
 
-`protium status` shows where you are and what comes next, at any point.
+`protium build` follows [docs/wine-build.md](docs/wine-build.md). It does not
+build the x86-64 FreeType and GnuTLS that Wine needs. It checks for them and
+names what is missing. The document explains each step and the three mistakes
+that each cost an hour to find.
 
-## Quickstart — Steam, then Elden Ring
-
-### Install Steam
+### 4. Install and start Steam
 
 ```sh
 protium install steam
 ```
 
-This fetches Valve's own installer, prints its size and SHA-256, adds
-`WINEMSYNC=1` to the prefix's `protium.conf` — Steam's UI fails silently
-without it, in a way that looks like a network fault
-([why](docs/wine-build.md#winemsync1-is-not-optional)) — runs the installer
-silently, applies the fix that makes Steam's window paint
-([what and why](docs/steam-rendering.md)), and prints how to launch it.
-
-Run it again on an install you already have: it leaves Steam alone and just
-puts the rendering fix back, which is what a Steam update takes off.
-
-`protium install list` shows everything protium knows how to fetch, with a
-word beside each saying whether anyone has actually run it here.
-**[docs/install.md](docs/install.md)** covers the command in full.
+This downloads Valve's installer and prints its size and SHA-256. It sets
+`WINEMSYNC=1` in the prefix, since without it Steam's UI fails in a way that
+looks like a network fault ([why](docs/wine-build.md#winemsync1-is-not-optional)).
+It runs the installer, applies the fix that makes Steam's window paint
+([details](docs/steam-rendering.md)), and prints the launch command.
 
 > [!WARNING]
-> **This one currently stops before it installs**, and says so. Valve's
-> `SteamSetup.exe` is a 32-bit program, and a prefix made by `protium prefix
-> new` has an empty `syswow64`, so nothing 32-bit starts in it. The Wine is
-> fine — its 32-bit modules are all there, and Steam installs and runs
-> normally in a prefix whose `syswow64` was filled by something else. The
-> measurements are in
-> [docs/install.md](docs/install.md#a-32-bit-installer-cannot-run-in-a-prefix-protium-made).
+> **On a fresh prefix, this stops before installing, and says so.** Valve's
+> installer is 32-bit, and `protium prefix new` leaves `syswow64` empty, so no
+> 32-bit program starts. The Wine itself is fine: Steam installs and runs in a
+> prefix whose `syswow64` was filled some other way.
+> [docs/install.md](docs/install.md#a-32-bit-installer-cannot-run-in-a-prefix-protium-made)
+> has the measurements.
 
-> [!NOTE]
-> Sign in **online, once**, so your credentials and game licences cache. Then
-> install your game from Steam's UI as normal.
+Start Steam with all three arguments:
 
 ```sh
 protium run "C:\Program Files (x86)\Steam\steam.exe" \
     -noreactlogin -noverifyfiles -norepairfiles
 ```
 
-> [!IMPORTANT]
-> Those three arguments are not optional, and `protium install steam` prints
-> them with the reason for each. Steam's window paints black without the fix
-> that command applies, and Steam puts its own file back — undoing the fix —
-> if you launch it without `-noverifyfiles -norepairfiles`. Run `protium
-> install steam` again after a Steam update, or any time the window goes
-> black. [docs/steam-rendering.md](docs/steam-rendering.md) has the whole
-> story.
+Without `-noverifyfiles -norepairfiles`, Steam restores its own files, removes
+the rendering fix, and its window goes black. After a Steam update, or whenever
+the window goes black, run `protium install steam` again. It leaves Steam alone
+and restores the fix.
 
-### Every launch after that, offline
+Sign in **online, once**, so Steam caches your credentials and licences. Then
+install games from Steam as usual.
 
-Online sign-in works on a runtime built with `patches/0001` and carrying
-GnuTLS, and it reached `Logged On` on 2026-09-08. On a Wine built by the recipe
-as first written it fails twice over: seven starts in eight never open the
-connection gate, and the build has no TLS, so every WebSocket connection
-manager fails regardless. [docs/steam-login.md](docs/steam-login.md) traces
-both. Offline mode sidesteps the whole question and a game needs nothing more,
-but it is no longer the only route.
+### 5. Play
 
-Add these to your account's block in
+Start the game's executable directly, with Steam signed in and running. For
+Elden Ring:
+
+```sh
+SteamAppId=1245620 protium run \
+  "C:\Program Files (x86)\Steam\steamapps\common\ELDEN RING\Game\eldenring.exe"
+```
+
+Running `eldenring.exe` instead of `start_protected_game.exe` skips Easy
+Anti-Cheat, which does not work here. `SteamAppId` tells the game which Steam
+app it is when no `steam_appid.txt` sits beside the executable.
+
+> [!NOTE]
+> The title screen reports `A connection error occurred. Unable to start in
+> online mode.` and the menu reads `OFFLINE`. This is expected. `CONTINUE`
+> loads your save.
+
+If the game exits at once with `connect to global user failed`, Steam is not
+signed in. See [Steam sign-in](#steam-sign-in).
+
+## Steam sign-in
+
+Online sign-in works on a runtime built with `patches/0001` and GnuTLS. It
+reached `Logged On` on 2026-09-08. A Wine built without them fails twice: seven
+starts in eight never open the connection gate, and without TLS every WebSocket
+connection fails. [docs/steam-login.md](docs/steam-login.md) traces both.
+
+Offline mode avoids the problem, and games need nothing more. Add these lines
+to your account's block in
 `<prefix>/drive_c/Program Files (x86)/Steam/config/loginusers.vdf`:
 
 ```
@@ -140,167 +146,153 @@ Add these to your account's block in
 "SkipOfflineModeWarning"  "1"
 ```
 
-> [!IMPORTANT]
-> Those flags are necessary but **not sufficient**. Offline mode is chosen by
-> Steam's CEF login page, which often never renders here, leaving the client
-> logged off forever. Start it on the legacy login path instead:
->
-> ```sh
-> protium run "C:\Program Files (x86)\Steam\steam.exe" -noreactlogin
-> ```
-
-### Run Elden Ring
-
-Launch the game directly, with Steam signed in and running. `eldenring.exe`
-rather than `start_protected_game.exe` skips Easy Anti-Cheat, which does not
-work here anyway.
+These flags are not enough on their own. Steam chooses offline mode on its CEF
+login page, which often never renders here, and the client stays logged off.
+Start Steam on the legacy login path instead:
 
 ```sh
-SteamAppId=1245620 protium run \
-  "C:\Program Files (x86)\Steam\steamapps\common\ELDEN RING\Game\eldenring.exe"
+protium run "C:\Program Files (x86)\Steam\steam.exe" -noreactlogin
 ```
-
-`SteamAppId` is what the game's own `SteamAPI_Init` reads when there is no
-`steam_appid.txt` beside the executable.
-
-> [!NOTE]
-> The title screen reports `A connection error occurred. Unable to start in
-> online mode.` and the menu reads `OFFLINE`. **That is correct and expected.**
-> `CONTINUE` loads the save and plays.
-
-> [!TIP]
-> If instead the game exits immediately with `connect to global user failed`,
-> Steam is not signed in — see the offline step above.
 
 ## Everyday use
 
 ```sh
-protium install list                   # software protium can fetch for you
-protium install steam                  # …and install, into the default prefix
-protium run ~/Downloads/Setup.exe      # install something yourself
+protium install list                   # software protium can fetch
+protium install steam                  # install it into the default prefix
+protium install clean                  # delete downloaded installers
+protium run ~/Downloads/Setup.exe      # run any Windows program
 protium run "C:\Program Files\…\Game.exe"
 
-protium prefix list                    # your prefixes; * is the default
-protium prefix new skyrim              # another one
-protium prefix stop                    # shut down the Wine running in one
-protium prefix remove skyrim           # delete one, after showing what goes
-protium prefix migrate-user            # move an old prefix onto the protium user
+protium prefix list                    # list prefixes; * marks the default
+protium prefix new skyrim              # create a prefix
 protium use skyrim                     # make it the default
-
-protium install clean                  # delete the installers it downloaded
+protium prefix stop                    # stop the Wine running in a prefix
+protium prefix remove skyrim           # delete a prefix, after confirming
+protium prefix migrate-user            # move an old prefix to the protium user
 ```
 
-A *prefix* is one Windows installation — its own `C:` drive, registry and
-programs. Games that disagree about what they need get one each.
+A *prefix* is one Windows installation, with its own `C:` drive, registry and
+programs. Give games that need different settings a prefix each.
 
-Each prefix keeps its settings in a `protium.conf` inside it — frame cap, ray
-tracing, Wine's own knobs — applied automatically to anything launched there.
-Full details in **[docs/prefixes.md](docs/prefixes.md)**.
+Each prefix keeps its settings in a `protium.conf`: frame cap, ray tracing and
+Wine options. protium applies them to everything launched in that prefix.
+[docs/prefixes.md](docs/prefixes.md) covers them. `protium install list` marks
+which installers have been tested; [docs/install.md](docs/install.md) covers
+the command.
 
-`protium prefix remove` prints the path, the size and the symlinks that lead
-out of the prefix, then asks. It never follows one of those links: a prefix
-can hold a link into somebody else's Steam library, and only the link goes.
-`--force` answers the question and nothing more — a prefix with Wine running
-in it is refused either way, with the `prefix stop` line to run first.
+`protium prefix remove` shows the path, the size and any symlinks leading out
+of the prefix, then asks. It never follows those links. A prefix can link into
+another Steam library, and only the link is removed. `--force` skips the
+question. protium refuses to remove a prefix while Wine runs in it, and prints
+the `prefix stop` command to run first.
 
-The Windows user inside a prefix is `protium`, and its profile is
-`C:\users\protium`. A prefix made before that change keeps the old
-`crossover` profile, which a current runtime will not find — Steam comes up
-signed out, because its credentials live in there. `protium prefix list` says
-so when it sees one, and `protium prefix migrate-user` moves it; protium never
-does that on its own. See
-**[docs/prefixes.md](docs/prefixes.md#the-windows-user-is-protium)**.
+The Windows user inside a prefix is `protium`, with its profile at
+`C:\users\protium`. Older prefixes use a `crossover` profile, which current
+runtimes do not find, so Steam starts signed out. `protium prefix list` flags
+these prefixes, and `protium prefix migrate-user` moves them. protium never
+migrates on its own.
+[Details](docs/prefixes.md#the-windows-user-is-protium).
 
 ## How it works
 
-| Half | What it is | Where it comes from |
+| Part | What it does | Source |
 | --- | --- | --- |
-| **Wine** | the Windows implementation — loader, Win32, `winemac.drv` | CodeWeavers' published CrossOver sources (LGPL), built by you |
-| **D3DMetal** | Direct3D 12/11 → Metal | Apple's Game Porting Toolkit |
+| **Wine** | Implements Windows: loader, Win32, `winemac.drv` | CodeWeavers' published CrossOver sources (LGPL), built by you |
+| **D3DMetal** | Translates Direct3D 12 and 11 to Metal | Apple's Game Porting Toolkit |
 
-Neither is optional: Wine alone renders nothing for a Direct3D 12 game, and
-D3DMetal alone has no process to live in. There is no third option — in
-particular Proton cannot be ported here, for reasons in
-[docs/why-not-proton.md](docs/why-not-proton.md).
+A game needs both. Wine alone renders nothing for Direct3D 12, and D3DMetal
+alone has no process to run in. Proton cannot be ported to macOS;
+[docs/why-not-proton.md](docs/why-not-proton.md) explains why.
 
 ## Status
 
-Early, and honest about which is which.
+protium is early. Here is what works and what does not.
 
-* **Working** — the Wine build recipe, `protium doctor`, `protium redist`, and
-  everything above about prefixes and launching. Elden Ring *plays* on a
-  protium-built Wine with no CrossOver runtime involved: save loaded, world
-  rendering, character responding to input.
-* **Working with a workaround** — signing the Windows Steam client in. Online
-  fails inside `CCMInterface::LogOn()` on an unpatched build, because Wine's
-  `GetLogicalDrives` never returns when the PE side is clang-built; the root
-  cause is measured, proven live, and patched in `patches/`, and a runtime
-  built with it reaches Valve's servers. Offline mode plus `-noreactlogin`
-  works on either. All in [docs/steam-login.md](docs/steam-login.md).
-* **Working** — `protium install`. It fetches from the publisher, prints the
-  size and SHA-256 of what arrived, configures the prefix, runs the installer,
-  applies the fixes a program needs here, and refuses when it can see the
-  installer cannot run. [docs/install.md](docs/install.md).
-* **Worked around, not fixed** — CEF rendering. Chromium's display compositor
-  runs in a separate GPU process and nothing it composites reaches the window
-  here, so Steam paints black. protium writes a stand-in `steamwebhelper.exe`
-  that adds `--in-process-gpu`, which works but is the wrong place for the fix:
-  it edits a Steam install protium does not own, a Steam update undoes it, and
-  every other CEF program still gets nothing. The real fix is a Wine patch.
-  Reversible with `protium install steam --undo`
-  ([docs/steam-rendering.md](docs/steam-rendering.md)).
-* **Broken, and diagnosed** — 32-bit programs in a prefix `protium prefix new`
-  made. `wineboot` leaves `syswow64` empty, so nothing 32-bit starts, and
-  that is what stops `protium install steam` on a fresh prefix. The Wine's own
-  32-bit modules are complete and work once the directory is filled
-  ([docs/install.md](docs/install.md#a-32-bit-installer-cannot-run-in-a-prefix-protium-made)).
-* **Designed, not built** — talking to the *native* macOS Steam client the way
-  Proton's `lsteamclient` does on Linux. The evidence, and the experiment that
-  would settle it, are in [docs/steam-bridge.md](docs/steam-bridge.md).
-* **Not attempted** — anti-cheat.
+* **Works:** the Wine build, `protium doctor`, `protium redist`, prefixes and
+  launching. Elden Ring plays on a protium-built Wine with no CrossOver runtime:
+  the save loads, the world renders and the character responds.
+* **Works:** `protium install`. It downloads from the publisher, prints the
+  size and SHA-256, configures the prefix, runs the installer, applies the
+  fixes the program needs, and refuses when the installer cannot run.
+* **Works with a workaround:** Steam sign-in. On an unpatched build, sign-in
+  fails in `CCMInterface::LogOn()` because Wine's `GetLogicalDrives` never
+  returns when the PE side is built with clang. `patches/` fixes it, and a
+  patched runtime reaches Valve's servers. Offline mode with `-noreactlogin`
+  works on either. See [docs/steam-login.md](docs/steam-login.md).
+* **Worked around:** CEF rendering. Chromium composites in a separate GPU
+  process, and nothing it draws reaches the window, so Steam paints black.
+  protium installs a stand-in `steamwebhelper.exe` that adds
+  `--in-process-gpu`. This edits a Steam install protium does not own, a Steam
+  update undoes it, and other CEF programs still render black. The real fix
+  belongs in Wine. `protium install steam --undo` reverts it.
+  See [docs/steam-rendering.md](docs/steam-rendering.md).
+* **Broken:** 32-bit programs in a prefix made by `protium prefix new`.
+  `wineboot` leaves `syswow64` empty, so no 32-bit program starts, and this
+  blocks `protium install steam` on a fresh prefix. The Wine's 32-bit modules
+  are complete and work once the directory is filled.
+  See [docs/install.md](docs/install.md#a-32-bit-installer-cannot-run-in-a-prefix-protium-made).
+* **Designed, not built:** talking to the native macOS Steam client, as
+  Proton's `lsteamclient` does on Linux.
+  See [docs/steam-bridge.md](docs/steam-bridge.md).
+* **Not attempted:** anti-cheat.
 
-**Performance**, on an M4: Elden Ring holds 33 fps at 2560×1440 with every
-setting on HIGH, and 59.7 fps — the game's own cap — at 1280×720 on the same
-scene. Quartering the pixels moving it that far means the limit is the GPU,
-not Rosetta and not the Direct3D-to-Metal translation. Measured with a mod
-runtime injected, which costs a little of its own.
+**Performance** on an M4: Elden Ring holds 33 fps at 2560×1440 with every
+setting on HIGH, and 59.7 fps, the game's own cap, at 1280×720 in the same
+scene. A quarter of the pixels nearly doubles the frame rate, so the GPU is
+the limit, not Rosetta or the Direct3D translation. These figures were
+measured with a mod runtime injected, which costs a little.
+
+## Building from source
+
+You need [Zig](https://ziglang.org/download/) 0.16.0 or newer.
+
+```sh
+git clone https://github.com/Benehiko/protium
+cd protium
+zig build --prefix ~/.local -Doptimize=ReleaseFast
+```
+
+This installs `~/.local/bin/protium`. A source build reports its version as
+`dev`; pass `-Dversion=0.1.0` to set one.
 
 ## Contributing
 
 ```sh
-zig build            # the binary, in zig-out/bin
-zig build test       # the tests
-zig fmt .            # formatting, enforced by the pre-commit hook
+zig build            # build the binary into zig-out/bin
+zig build test       # run the tests
+zig fmt .            # format; the pre-commit hook enforces it
 ```
 
-The pre-commit hook is tracked in `.githooks/` rather than `.git/hooks/`, so it
-is reviewable and shared. Activate it per clone with
-`git config core.hooksPath .githooks`. It runs the fast checks only —
-formatting and a build — and leaves the test suite to CI. `git commit
---no-verify` bypasses it.
+The pre-commit hook lives in `.githooks/`, so it is tracked and reviewable.
+Enable it in each clone with `git config core.hooksPath .githooks`. It checks
+formatting and the build, and leaves the tests to CI.
+`git commit --no-verify` bypasses it.
+
+[docs/releasing.md](docs/releasing.md) explains how releases are built and
+signed.
 
 ## Licensing
 
-protium's own code is **[Apache 2.0](LICENSE)**. It vendors nothing: no
-dependencies, no bundled sources, and no linking against either half it
-assembles. The exception is the Wine patches in [`patches/`](patches/README.md),
-which the binary carries so `protium build` can apply them: they change Wine,
-so they are LGPL-2.1-or-later like Wine.
+protium's own code is licensed under **[Apache 2.0](LICENSE)**. It vendors
+nothing: no dependencies, no bundled sources, and no linking against Wine or
+D3DMetal. The one exception is the Wine patches in
+[`patches/`](patches/README.md), which the binary carries so `protium build`
+can apply them. They modify Wine, so they are LGPL-2.1-or-later, like Wine.
 
-The two halves it assembles are not protium's to license, and their terms are
-recorded with the versions and evidence behind them in
-**[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)**:
+Wine and D3DMetal are not protium's to license.
+**[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)** records their terms, with
+versions and evidence.
 
-* **Wine / CrossOver sources** are LGPL. CodeWeavers publish them because the
-  licence requires it; building and using them is what the licence is for. If
-  you go on to *redistribute* a Wine you built, the LGPL's conditions come with
-  it — protium's Apache licence does not cover those binaries.
-* **D3DMetal is Apple's**, under the licence in Apple's download. protium reads
-  and installs a copy you obtained yourself.
+* **Wine and the CrossOver sources** are LGPL. CodeWeavers publish them because
+  the licence requires it, and building and using them is what the licence
+  allows. If you redistribute a Wine you built, the LGPL's conditions apply.
+  protium's Apache licence does not cover those binaries.
+* **D3DMetal belongs to Apple** and comes under the licence in Apple's
+  download. protium reads and installs a copy you obtained yourself.
 
 > [!IMPORTANT]
-> protium ships no part of Apple's redistributable, and neither should anything
-> built from this repository.
+> protium ships no part of Apple's redistributable, and nothing built from this
+> repository should.
 
 protium is an independent project, not affiliated with or endorsed by Apple,
 CodeWeavers, the Wine project or Valve.
