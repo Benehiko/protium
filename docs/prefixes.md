@@ -79,10 +79,14 @@ line by hand applies it to the terminal you are already in.
 The same output starts with protium's tab-completion for that shell, so this
 one line is the whole setup. `protium install <Tab>` offers what the catalogue
 can install, and `protium run <Tab>` offers what is installed in the prefix:
-catalogue names such as `steam`, and the file name of every `.exe` in it. A bare
-name is looked up when you run it — `protium run steam`, or `protium run
-eldenring.exe` when exactly one file in the prefix has that name; a path, or a
-file in the current directory, is passed to Wine as typed. `protium completion
+catalogue names such as `steam`, the title of every Steam game, and the file
+name of every `.exe` in the prefix and in each Steam library, on any drive.
+A name is looked up when you run it: `protium run steam`; `protium run
+"elden ring"` or `protium run 1245620`, from Steam's manifests; or `protium
+run eldenring.exe` when exactly one file has that name. For a title, protium
+picks the game's program past installers, runtimes, crash reporters and
+anti-cheat, and lists the candidates when it cannot tell. A path, or a file
+in the current directory, is passed to Wine as typed. `protium completion
 <shell>` prints just the completion, for anyone who wants it without the rest.
 In zsh, if `compinit` has not run by the time the line is evaluated, the
 completion runs it.

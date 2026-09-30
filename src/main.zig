@@ -59,9 +59,10 @@ const usage =
     \\  protium run <program> [args...]   Launch something in the default prefix.
     \\                                    <program> is a path, an installed
     \\                                    name such as `steam`, or the file
-    \\                                    name of an .exe in the prefix.
-    \\                                    A Steam game gets its SteamAppId
-    \\                                    from Steam's manifest.
+    \\                                    name of an .exe in the prefix or a
+    \\                                    Steam library, or a Steam game's
+    \\                                    title or app ID. A Steam game gets
+    \\                                    its SteamAppId from Steam's manifest.
     \\  protium prefix list               Show the prefixes and which is default.
     \\  protium prefix new <name>         Create a prefix and boot it.
     \\  protium prefix stop [<name>]      Shut down the Wine running in a prefix.
@@ -1665,9 +1666,10 @@ const Target = struct {
 };
 
 /// What `protium run <name>` launches. A path, a file that exists here, or
-/// anything protium does not recognise goes to Wine as typed; a catalogue name
-/// or the name of an `.exe` in the prefix becomes its full path. Returns null
-/// after saying why nothing should be launched.
+/// anything protium does not recognise goes to Wine as typed. A catalogue
+/// name, the name of an `.exe` in the prefix or one of its Steam libraries, or
+/// a Steam game's title or app ID becomes a full path. Returns null after
+/// saying why nothing should be launched.
 fn launchTarget(
     arena: std.mem.Allocator,
     io: Io,
@@ -1676,16 +1678,26 @@ fn launchTarget(
     w: *Io.Writer,
 ) !?Target {
     const as_typed: Target = .{ .program = name };
-    if (!complete.isBareName(name)) return as_typed;
+    const bare = complete.isBareName(name);
+    // A title can hold a colon, which a bare name cannot, and is still not a
+    // path.
+    if (!bare and !steamapp.couldBeTitle(name)) return as_typed;
     // A file in the current directory is what someone at a shell means.
     if (exists(io, name)) return as_typed;
 
-    const drive_c = try res.sess.join(&.{ res.prefix.dir, "drive_c" });
+    const libs = try steamapp.libraries(arena, io, res.prefix.dir);
+    if (!bare) return steamGame(arena, io, libs, name, w);
+
     const installed = try installedApps(arena, res.sess, res.prefix.dir, name);
-    const programs: []const complete.Program = if (complete.isExe(name)) try complete.scan(arena, io, drive_c) else &.{};
+    const programs: []const complete.Program = if (complete.isExe(name)) try prefixPrograms(arena, io, res.prefix.dir, libs) else &.{};
 
     switch (try complete.resolve(arena, name, installed, programs)) {
-        .passthrough => return as_typed,
+        .passthrough => {
+            // `notepad` and `winecfg` stay Wine's unless a Steam game has
+            // that exact name.
+            if (complete.isExe(name)) return as_typed;
+            return steamGame(arena, io, libs, name, w);
+        },
         .app => |app| {
             var flags: std.ArrayList([]const u8) = .empty;
             for (app.launch_args) |a| try flags.append(arena, a.flag);
@@ -1704,6 +1716,57 @@ fn launchTarget(
             try w.print("protium run: several programs in the prefix are called {s}:\n", .{name});
             for (paths) |p| try w.print("  {s}\n", .{p});
             try w.writeAll("Run one of them by its full path.\n");
+            return null;
+        },
+    }
+}
+
+/// Every program `protium run` can find by file name: all of `drive_c`, and
+/// the games in each Steam library, which may be on another drive.
+fn prefixPrograms(
+    arena: std.mem.Allocator,
+    io: Io,
+    prefix_dir: []const u8,
+    libs: []const []const u8,
+) ![]const complete.Program {
+    var out: std.ArrayList(complete.Program) = .empty;
+    const drive_c = try std.fs.path.join(arena, &.{ prefix_dir, "drive_c" });
+    try complete.scanRoot(arena, io, drive_c, complete.drive_walk, &out);
+    for (libs) |lib| {
+        const common = try std.fs.path.join(arena, &.{ lib, "common" });
+        try complete.scanRoot(arena, io, common, complete.library_walk, &out);
+    }
+    return complete.dedupe(arena, out.items);
+}
+
+/// The Steam game `name` is the title or app ID of, as a program to launch.
+/// A name that is no game goes to Wine as typed. Returns null after saying
+/// why nothing should be launched.
+fn steamGame(
+    arena: std.mem.Allocator,
+    io: Io,
+    libs: []const []const u8,
+    name: []const u8,
+    w: *Io.Writer,
+) !?Target {
+    const game = steamapp.find(try steamapp.games(arena, io, libs), name) orelse return .{ .program = name };
+
+    var found: std.ArrayList(complete.Program) = .empty;
+    try complete.scanRoot(arena, io, game.dir, complete.game_walk, &found);
+    switch (try steamapp.choose(arena, game.dir, &.{ game.name, game.installdir }, found.items)) {
+        .one => |path| {
+            try w.print("protium run: {s} ({s}) is {s}\n", .{ game.name, game.appid, path });
+            return .{ .program = path };
+        },
+        .none => {
+            try w.print("protium run: {s} ({s}) should be in {s},\n", .{ game.name, game.appid, game.dir });
+            try w.writeAll("but nothing there looks like the game. Run its .exe by path.\n");
+            return null;
+        },
+        .several => |paths| {
+            try w.print("protium run: {s} ({s}) has more than one program that could be the game:\n", .{ game.name, game.appid });
+            for (paths) |p| try w.print("  {s}\n", .{p});
+            try w.writeAll("Run one of them by its path.\n");
             return null;
         },
     }
@@ -1783,11 +1846,12 @@ fn completeInto(
                 if (std.mem.eql(u8, a, "--prefix") and i + 1 < words.len) asked = words[i + 1];
             }
             const px = try sess.prefix(asked);
-            const drive_c = try sess.join(&.{ px.dir, "drive_c" });
+            const libs = try steamapp.libraries(arena, io, px.dir);
 
             var all: std.ArrayList([]const u8) = .empty;
             for (try installedApps(arena, sess, px.dir, null)) |a| try all.append(arena, a.name);
-            try all.appendSlice(arena, try complete.programNames(arena, try complete.scan(arena, io, drive_c)));
+            for (try steamapp.games(arena, io, libs)) |g| try all.append(arena, g.name);
+            try all.appendSlice(arena, try complete.programNames(arena, try prefixPrograms(arena, io, px.dir, libs)));
             try complete.emit(w, all.items, cur);
         },
     }
