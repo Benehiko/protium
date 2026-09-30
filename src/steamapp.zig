@@ -373,6 +373,8 @@ pub fn choose(
 ) !Choice {
     var best: std.ArrayList([]const u8) = .empty;
     var best_depth: usize = std.math.maxInt(usize);
+    // Every program that is not noise, at any depth, for `settle`.
+    var kept: std.ArrayList([]const u8) = .empty;
     for (programs) |p| {
         if (p.path.len <= game_dir.len + 1) continue;
         if (!std.mem.startsWith(u8, p.path, game_dir)) continue;
@@ -388,6 +390,7 @@ pub fn choose(
             if (isNoiseDir(part)) noisy = true;
         }
         if (noisy) continue;
+        try kept.append(arena, p.path);
 
         if (depth < best_depth) {
             best_depth = depth;
@@ -412,14 +415,28 @@ pub fn choose(
                 }
             }
         }
-        if (matches == 1) return .{ .one = named.? };
+        if (matches == 1) return settle(arena, named.?, kept.items);
     }
 
     return switch (best.items.len) {
         0 => .none,
-        1 => .{ .one = best.items[0] },
+        1 => settle(arena, best.items[0], kept.items),
         else => .{ .several = best.items },
     };
+}
+
+/// `pick`, unless another program has its file name, in which case all of
+/// them. Two copies of one program are two editions or two builds of the
+/// game, like Divinity: Original Sin 2's `Classic/EoCApp.exe` and
+/// `DefEd/bin/EoCApp.exe`, and the shallower is not the likelier.
+fn settle(arena: std.mem.Allocator, pick: []const u8, kept: []const []const u8) !Choice {
+    const name = std.fs.path.basename(pick);
+    var same: std.ArrayList([]const u8) = .empty;
+    for (kept) |path| {
+        if (std.ascii.eqlIgnoreCase(std.fs.path.basename(path), name)) try same.append(arena, path);
+    }
+    if (same.items.len > 1) return .{ .several = same.items };
+    return .{ .one = pick };
 }
 
 // ---------------------------------------------------------------------------
@@ -601,6 +618,29 @@ test "the game's program is chosen past launchers, redistributables and anti-che
     };
     switch (try choose(a, "/g/SB", &.{"Stellar Blade"}, &crs)) {
         .one => |p| try testing.expectEqualStrings("/g/SB/SB.exe", p),
+        else => return error.TestUnexpectedResult,
+    }
+
+    // Two editions of one game, as Divinity: Original Sin 2 ships them: the
+    // same file name at two depths is a question, not the shallower one.
+    const editions = [_]complete.Program{
+        prog("/g/DOS2/Classic/EoCApp.exe"),
+        prog("/g/DOS2/Classic/SupportTool.exe"),
+        prog("/g/DOS2/DefEd/bin/EoCApp.exe"),
+        prog("/g/DOS2/DefEd/bin/SupportTool.exe"),
+        prog("/g/DOS2/DotNetCore/windowsdesktop-runtime-3.1.8-win-x64.exe"),
+        prog("/g/DOS2/bin/CefSharp.BrowserSubprocess.exe"),
+        prog("/g/DOS2/bin/CrashReporter.exe"),
+        prog("/g/DOS2/bin/DriverVersionChecker.exe"),
+        prog("/g/DOS2/bin/LayersChecker.exe"),
+        prog("/g/DOS2/bin/SupportTool.exe"),
+    };
+    switch (try choose(a, "/g/DOS2", &.{ "Divinity: Original Sin 2", "Divinity Original Sin 2" }, &editions)) {
+        .several => |ps| {
+            try testing.expectEqual(@as(usize, 2), ps.len);
+            try testing.expectEqualStrings("/g/DOS2/Classic/EoCApp.exe", ps[0]);
+            try testing.expectEqualStrings("/g/DOS2/DefEd/bin/EoCApp.exe", ps[1]);
+        },
         else => return error.TestUnexpectedResult,
     }
 
