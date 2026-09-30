@@ -76,6 +76,17 @@ protium cannot set a variable in the shell that ran it — no process can. So
 `protium shell-init` prints the right one for your shell. Running that same
 line by hand applies it to the terminal you are already in.
 
+The same output starts with protium's tab-completion for that shell, so this
+one line is the whole setup. `protium install <Tab>` offers what the catalogue
+can install, and `protium run <Tab>` offers what is installed in the prefix:
+catalogue names such as `steam`, and the file name of every `.exe` in it. A bare
+name is looked up when you run it — `protium run steam`, or `protium run
+eldenring.exe` when exactly one file in the prefix has that name; a path, or a
+file in the current directory, is passed to Wine as typed. `protium completion
+<shell>` prints just the completion, for anyone who wants it without the rest.
+In zsh, if `compinit` has not run by the time the line is evaluated, the
+completion runs it.
+
 Two properties make this safe to add before the rest of the install is
 finished, and safe to leave there permanently:
 

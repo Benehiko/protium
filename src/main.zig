@@ -28,6 +28,7 @@ const teardown = @import("teardown.zig");
 const removal = @import("removal.zig");
 const profile = @import("profile.zig");
 const recipe = @import("recipe.zig");
+const complete = @import("complete.zig");
 
 /// The stand-in `steamwebhelper.exe`, built for x86_64-windows from
 /// `src/webhelper.zig` by this repository's own `build.zig` and embedded here.
@@ -47,12 +48,16 @@ const usage =
     \\  protium build               Build Wine from CodeWeavers' sources and install it.
     \\  protium status              Where the installation is, and the next step.
     \\  protium shell-init          Print the line that makes prefixes automatic.
+    \\  protium completion <shell>  Print tab-completion for bash, zsh or fish.
     \\
     \\Every day:
     \\  protium install <name>            Fetch and install known software.
     \\  protium install list              Show what protium knows how to install.
     \\  protium install clean             Delete the installers protium downloaded.
     \\  protium run <program> [args...]   Launch something in the default prefix.
+    \\                                    <program> is a path, an installed
+    \\                                    name such as `steam`, or the file
+    \\                                    name of an .exe in the prefix.
     \\  protium prefix list               Show the prefixes and which is default.
     \\  protium prefix new <name>         Create a prefix and boot it.
     \\  protium prefix stop [<name>]      Shut down the Wine running in a prefix.
@@ -129,6 +134,9 @@ fn dispatch(
     if (std.mem.eql(u8, cmd, "run")) return runLaunch(arena, io, vars, rest, w);
     if (std.mem.eql(u8, cmd, "install")) return runInstall(arena, io, vars, rest, w);
     if (std.mem.eql(u8, cmd, "shell-init")) return runShellInit(vars, rest, w);
+    if (std.mem.eql(u8, cmd, "completion")) return runCompletion(vars, rest, w);
+    // Not in the usage: the shell scripts from `completion` call this.
+    if (std.mem.eql(u8, cmd, "__complete")) return runComplete(arena, io, vars, rest, w);
     if (std.mem.eql(u8, cmd, "version")) {
         try w.print("protium {s}\n", .{protium_version});
         return 0;
@@ -419,6 +427,11 @@ fn runEnv(
         }
     else
         shell.Dialect.fromShellPath(vars.get("SHELL"));
+
+    // Tab-completion rides along, so the one line people already add to their
+    // startup file turns it on too. It goes first and needs no prefix: it is
+    // wanted even when the installation is not finished.
+    if (complete.script(dialect)) |script| try w.writeAll(script);
 
     // `resolve` explains itself in prose, which is exactly what must not reach
     // a shell, so its report is thrown away and replaced with one comment.
@@ -1617,12 +1630,152 @@ fn runLaunch(
     const computed = try env.compute(arena, res.site, res.sess.inherited(), settings);
     for (computed) |v| try vars.put(v.name, v.value);
 
+    const target = try launchTarget(arena, io, res, opts.positional[0], w) orelse return 1;
+
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.append(arena, loader);
-    for (opts.positional) |a| try argv.append(arena, a);
+    try argv.append(arena, target.program);
+    for (target.flags) |f| try argv.append(arena, f);
+    for (opts.positional[1..]) |a| try argv.append(arena, a);
 
     try w.flush();
     return spawnWait(io, vars, argv.items);
+}
+
+const Target = struct {
+    program: []const u8,
+    /// Arguments the catalogue says the program needs here, put before the
+    /// person's own.
+    flags: []const []const u8 = &.{},
+};
+
+/// What `protium run <name>` launches. A path, a file that exists here, or
+/// anything protium does not recognise goes to Wine as typed; a catalogue name
+/// or the name of an `.exe` in the prefix becomes its full path. Returns null
+/// after saying why nothing should be launched.
+fn launchTarget(
+    arena: std.mem.Allocator,
+    io: Io,
+    res: Resolution,
+    name: []const u8,
+    w: *Io.Writer,
+) !?Target {
+    const as_typed: Target = .{ .program = name };
+    if (!complete.isBareName(name)) return as_typed;
+    // A file in the current directory is what someone at a shell means.
+    if (exists(io, name)) return as_typed;
+
+    const drive_c = try res.sess.join(&.{ res.prefix.dir, "drive_c" });
+    const installed = try installedApps(arena, res.sess, res.prefix.dir, name);
+    const programs: []const complete.Program = if (complete.isExe(name)) try complete.scan(arena, io, drive_c) else &.{};
+
+    switch (try complete.resolve(arena, name, installed, programs)) {
+        .passthrough => return as_typed,
+        .app => |app| {
+            var flags: std.ArrayList([]const u8) = .empty;
+            for (app.launch_args) |a| try flags.append(arena, a.flag);
+            return .{ .program = app.installed, .flags = flags.items };
+        },
+        .not_installed => |app| {
+            try w.print("protium run: {s} is not installed in the prefix {s}.\n", .{ app.name, res.prefix.name });
+            try w.print("Install it with: protium install {s}\n", .{app.name});
+            return null;
+        },
+        .program => |path| {
+            try w.print("protium run: {s} is {s}\n", .{ name, path });
+            return .{ .program = path };
+        },
+        .ambiguous => |paths| {
+            try w.print("protium run: several programs in the prefix are called {s}:\n", .{name});
+            for (paths) |p| try w.print("  {s}\n", .{p});
+            try w.writeAll("Run one of them by its full path.\n");
+            return null;
+        },
+    }
+}
+
+/// The catalogue entries whose program is in the prefix. With a `name`, only
+/// that entry is looked at, which is all `run` needs to know.
+fn installedApps(arena: std.mem.Allocator, sess: session.Session, prefix_dir: []const u8, name: ?[]const u8) ![]const *const catalog.App {
+    var out: std.ArrayList(*const catalog.App) = .empty;
+    for (&catalog.apps) |*app| {
+        if (name) |n| if (!std.mem.eql(u8, n, app.name)) continue;
+        const host = catalog.hostPath(arena, prefix_dir, app.installed) catch continue;
+        if (sess.exists(host)) try out.append(arena, app);
+    }
+    return out.items;
+}
+
+// ---------------------------------------------------------------------------
+// completion
+
+fn runCompletion(vars: *std.process.Environ.Map, args: []const []const u8, w: *Io.Writer) !u8 {
+    if (args.len > 1) return reportBadOption(w, "completion", args[1]);
+    const dialect = if (args.len == 1)
+        shell.Dialect.fromName(args[0])
+    else
+        shell.Dialect.fromShellPath(vars.get("SHELL"));
+    const text = complete.script(dialect orelse .posix) orelse {
+        try w.writeAll("protium completion: name a shell, one of bash, zsh or fish\n");
+        return 2;
+    };
+    try w.writeAll(text);
+    return 0;
+}
+
+/// Answer one Tab press: candidates for the last word, one per line. It never
+/// fails out loud — an error here would be printed into someone's command
+/// line — so anything unreadable simply yields no candidates.
+fn runComplete(
+    arena: std.mem.Allocator,
+    io: Io,
+    vars: *std.process.Environ.Map,
+    words: []const []const u8,
+    w: *Io.Writer,
+) !u8 {
+    completeInto(arena, io, vars, words, w) catch {};
+    return 0;
+}
+
+fn completeInto(
+    arena: std.mem.Allocator,
+    io: Io,
+    vars: *std.process.Environ.Map,
+    words: []const []const u8,
+    w: *Io.Writer,
+) !void {
+    const cur = if (words.len > 0) words[words.len - 1] else "";
+    switch (complete.kindAt(words)) {
+        .none => {},
+        .commands => try complete.emit(w, &complete.commands, cur),
+        .options => try complete.emit(w, &complete.options, cur),
+        .prefix_subcommands => try complete.emit(w, &complete.prefix_subcommands, cur),
+        .shells => try complete.emit(w, &complete.shells, cur),
+        .install_names => {
+            var all: std.ArrayList([]const u8) = .empty;
+            for (&catalog.apps) |*a| try all.append(arena, a.name);
+            try all.appendSlice(arena, &complete.install_specials);
+            try complete.emit(w, all.items, cur);
+        },
+        .prefix_names, .runtime_names, .programs => |k| {
+            const sess = try session.Session.open(arena, io, vars);
+            if (k == .prefix_names) return complete.emit(w, try sess.installed(layout.prefixes), cur);
+            if (k == .runtime_names) return complete.emit(w, try sess.installed(layout.runtimes), cur);
+
+            // The prefix `run` would use, honouring a `--prefix` already typed.
+            var asked: ?[]const u8 = null;
+            for (words[0..words.len -| 1], 0..) |a, i| {
+                if (std.mem.eql(u8, a, "--prefix") and i + 1 < words.len) asked = words[i + 1];
+            }
+            const px = try sess.prefix(asked);
+            const drive_c = try sess.join(&.{ px.dir, "drive_c" });
+
+            var all: std.ArrayList([]const u8) = .empty;
+            for (try installedApps(arena, sess, px.dir, null)) |a| try all.append(arena, a.name);
+            try all.appendSlice(arena, try complete.programNames(arena, try complete.scan(arena, io, drive_c)));
+            try complete.emit(w, all.items, cur);
+        },
+    }
 }
 
 /// Run a program to completion with the current environment, giving it this
@@ -2894,7 +3047,9 @@ fn runShellInit(vars: *std.process.Environ.Map, args: []const []const u8, w: *Io
     try w.writeAll(
         \\Adding one line to your shell's startup file makes every new terminal
         \\point at your default prefix, so anything you launch from it — wine, a
-        \\launcher, a game — ends up in the same place without being told.
+        \\launcher, a game — ends up in the same place without being told. The
+        \\same line turns on tab-completion for protium, including the names of
+        \\what you have installed.
         \\
         \\
     );

@@ -22,6 +22,7 @@ pub const teardown = @import("teardown.zig");
 pub const removal = @import("removal.zig");
 pub const profile = @import("profile.zig");
 pub const recipe = @import("recipe.zig");
+pub const complete = @import("complete.zig");
 
 test {
     _ = semver;
@@ -41,4 +42,5 @@ test {
     _ = removal;
     _ = profile;
     _ = recipe;
+    _ = complete;
 }
