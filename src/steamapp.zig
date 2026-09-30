@@ -296,26 +296,58 @@ pub const Choice = union(enum) {
     several: []const []const u8,
 };
 
-/// File names, lowercased, that are never the game: installers, the
-/// runtimes games bundle, crash reporters, and Easy Anti-Cheat's bootstrapper,
-/// which does not work here.
+/// Parts of file names, lowercased, that are never the game: installers, the
+/// runtimes games bundle, crash reporters, hardware checkers, helper
+/// processes, overlays, and Easy Anti-Cheat's bootstrapper, which does not
+/// work here. Each was seen beside a real game's executable. They are
+/// specific rather than short, so that a game called `Checkers.exe` survives.
 const noise_names = [_][]const u8{
-    "unins",                "setup",     "redist",     "crashhandler",  "crashreport",
-    "crashpad",             "installer", "dxwebsetup", "easyanticheat", "battleye",
+    "unins",
+    "setup",
+    "redist",
+    "crashhandler",
+    "crashreport",
+    "crashpad",
+    "crs-uploader",
+    "crs-handler",
+    "crs-video",
+    "installer",
+    "easyanticheat",
+    "battleye",
     "start_protected_game",
+    "windowsdesktop-runtime",
+    "layerschecker",
+    "driverversionchecker",
+    "browsersubprocess",
+    "supporttool",
+    "overlayinjector",
 };
 
 /// Directory names, lowercased, whose contents are never the game.
 const noise_dirs = [_][]const u8{
-    "_commonredist", "commonredist", "redist",  "redistributables",
-    "easyanticheat", "battleye",     "directx", "__installer",
+    "_commonredist",
+    "commonredist",
+    "redist",
+    "redistributables",
+    "easyanticheat",
+    "battleye",
+    "directx",
+    "__installer",
     "installers",
+    "__overlay",
 };
 
 fn containsAny(arena: std.mem.Allocator, s: []const u8, words: []const []const u8) !bool {
     const lower = try std.ascii.allocLowerString(arena, s);
     for (words) |w| if (std.mem.indexOf(u8, lower, w) != null) return true;
     return false;
+}
+
+/// Letters and digits only, lowercased, so `ELDEN RING` and `eldenring` agree.
+fn squash(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    for (s) |c| if (std.ascii.isAlphanumeric(c)) try out.append(arena, std.ascii.toLower(c));
+    return out.items;
 }
 
 fn isNoiseDir(name: []const u8) bool {
@@ -328,7 +360,17 @@ fn isNoiseDir(name: []const u8) bool {
 /// `.exe` wins if it is alone at its depth. An Unreal game's top-level
 /// `Stray.exe` is its launcher and starts the real one, so shallowest is
 /// right there too. Anything closer than that is left to the person.
-pub fn choose(arena: std.mem.Allocator, game_dir: []const u8, programs: []const complete.Program) !Choice {
+///
+/// When several tie, the one whose file name is the game's name, ignoring
+/// case, spaces and punctuation, wins if only one is: `eldenring.exe` for
+/// `ELDEN RING`, beside a mod's launcher in the same folder. `titles` are the
+/// names to compare against, Steam's name for the game and its directory.
+pub fn choose(
+    arena: std.mem.Allocator,
+    game_dir: []const u8,
+    titles: []const []const u8,
+    programs: []const complete.Program,
+) !Choice {
     var best: std.ArrayList([]const u8) = .empty;
     var best_depth: usize = std.math.maxInt(usize);
     for (programs) |p| {
@@ -353,6 +395,26 @@ pub fn choose(arena: std.mem.Allocator, game_dir: []const u8, programs: []const 
         }
         if (depth == best_depth) try best.append(arena, p.path);
     }
+
+    if (best.items.len > 1) {
+        var named: ?[]const u8 = null;
+        var matches: usize = 0;
+        for (best.items) |path| {
+            const file = std.fs.path.basename(path);
+            const stem = if (complete.isExe(file)) file[0 .. file.len - ".exe".len] else file;
+            const s = try squash(arena, stem);
+            if (s.len == 0) continue;
+            for (titles) |t| {
+                if (std.mem.eql(u8, s, try squash(arena, t))) {
+                    named = path;
+                    matches += 1;
+                    break;
+                }
+            }
+        }
+        if (matches == 1) return .{ .one = named.? };
+    }
+
     return switch (best.items.len) {
         0 => .none,
         1 => .{ .one = best.items[0] },
@@ -485,12 +547,30 @@ test "the game's program is chosen past launchers, redistributables and anti-che
     defer arena.deinit();
     const a = arena.allocator();
 
+    const elden_titles = [_][]const u8{ "ELDEN RING", "ELDEN RING" };
+
+    // The executables of a stock install, as Steam lays it out.
     const elden = [_]complete.Program{
         prog("/g/ELDEN RING/Game/eldenring.exe"),
         prog("/g/ELDEN RING/Game/start_protected_game.exe"),
-        prog("/g/ELDEN RING/Game/EasyAntiCheat/EasyAntiCheat_EOS_Setup.exe"),
+        prog("/g/ELDEN RING/Game/EasyAntiCheat/easyanticheat_eos_setup.exe"),
     };
-    switch (try choose(a, "/g/ELDEN RING", &elden)) {
+    switch (try choose(a, "/g/ELDEN RING", &elden_titles, &elden)) {
+        .one => |p| try testing.expectEqualStrings("/g/ELDEN RING/Game/eldenring.exe", p),
+        else => return error.TestUnexpectedResult,
+    }
+
+    // A real install with the Seamless Co-op mod, whose launcher sits beside
+    // the game: the game's own name breaks the tie.
+    const modded = [_]complete.Program{
+        prog("/g/ELDEN RING/Game/eldenring.exe"),
+        prog("/g/ELDEN RING/Game/Seamless Co-op v1.9.0-510-1-9-0-1737457830(1)/ersc_launcher.exe"),
+        prog("/g/ELDEN RING/Game/ersc_launcher.exe"),
+        prog("/g/ELDEN RING/Game/start_protected_game.exe"),
+        prog("/g/ELDEN RING/Game/EasyAntiCheat/easyanticheat_eos_setup.exe"),
+        prog("/g/ELDEN RING/Game/SeamlessCoop/crashpad/crashpad_handler.exe"),
+    };
+    switch (try choose(a, "/g/ELDEN RING", &elden_titles, &modded)) {
         .one => |p| try testing.expectEqualStrings("/g/ELDEN RING/Game/eldenring.exe", p),
         else => return error.TestUnexpectedResult,
     }
@@ -500,13 +580,33 @@ test "the game's program is chosen past launchers, redistributables and anti-che
         prog("/g/Stray/Engine/Binaries/Win64/CrashReportClient.exe"),
         prog("/g/Stray/Stray.exe"),
     };
-    switch (try choose(a, "/g/Stray", &unreal)) {
+    switch (try choose(a, "/g/Stray", &.{"Stray"}, &unreal)) {
         .one => |p| try testing.expectEqualStrings("/g/Stray/Stray.exe", p),
         else => return error.TestUnexpectedResult,
     }
 
+    // Seen in real installs: EA's overlay one level down hid the game three
+    // down (Jedi: Fallen Order), and crash uploaders sat beside it (Stellar
+    // Blade).
+    const overlay = [_]complete.Program{
+        prog("/g/Jedi/__overlay/overlayinjector.exe"),
+        prog("/g/Jedi/SwGame/Binaries/Win64/starwarsjedifallenorder.exe"),
+    };
+    switch (try choose(a, "/g/Jedi", &.{"Jedi"}, &overlay)) {
+        .one => |p| try testing.expectEqualStrings("/g/Jedi/SwGame/Binaries/Win64/starwarsjedifallenorder.exe", p),
+        else => return error.TestUnexpectedResult,
+    }
+    const crs = [_]complete.Program{
+        prog("/g/SB/crs-uploader.exe"), prog("/g/SB/crs-handler.exe"), prog("/g/SB/SB.exe"),
+    };
+    switch (try choose(a, "/g/SB", &.{"Stellar Blade"}, &crs)) {
+        .one => |p| try testing.expectEqualStrings("/g/SB/SB.exe", p),
+        else => return error.TestUnexpectedResult,
+    }
+
+    // A tie that no name breaks is left to the person.
     const two = [_]complete.Program{ prog("/g/X/a.exe"), prog("/g/X/b.exe"), prog("/g/X/sub/c.exe") };
-    switch (try choose(a, "/g/X", &two)) {
+    switch (try choose(a, "/g/X", &.{"X"}, &two)) {
         .several => |ps| try testing.expectEqual(@as(usize, 2), ps.len),
         else => return error.TestUnexpectedResult,
     }
@@ -515,5 +615,5 @@ test "the game's program is chosen past launchers, redistributables and anti-che
         prog("/g/X/_CommonRedist/vcredist/vc_redist.x64.exe"),
         prog("/g/X/DXSETUP.exe"),
     };
-    try testing.expect(try choose(a, "/g/X", &noise) == .none);
+    try testing.expect(try choose(a, "/g/X", &.{"X"}, &noise) == .none);
 }

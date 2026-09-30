@@ -1753,7 +1753,7 @@ fn steamGame(
 
     var found: std.ArrayList(complete.Program) = .empty;
     try complete.scanRoot(arena, io, game.dir, complete.game_walk, &found);
-    switch (try steamapp.choose(arena, game.dir, found.items)) {
+    switch (try steamapp.choose(arena, game.dir, &.{ game.name, game.installdir }, found.items)) {
         .one => |path| {
             try w.print("protium run: {s} ({s}) is {s}\n", .{ game.name, game.appid, path });
             return .{ .program = path };

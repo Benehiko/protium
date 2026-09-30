@@ -102,17 +102,23 @@ install games from Steam as usual.
 
 ### 5. Play
 
-With Steam signed in and running, start the game by its executable's name.
-For Elden Ring:
+With Steam signed in and running, start the game by the name Steam shows for
+it:
 
 ```sh
-protium run eldenring.exe
+protium run "elden ring"
 ```
 
-protium finds the file in the prefix and sets `SteamAppId` from the manifest
-Steam wrote when it installed the game. A game needs that ID to reach Steam
-when it is started directly. Running `eldenring.exe` instead of
-`start_protected_game.exe` skips Easy Anti-Cheat, which does not work here.
+protium looks the game up in Steam's records, in every Steam library in the
+prefix, on any drive. It picks the game's program and skips installers,
+bundled runtimes, crash reporters and Easy Anti-Cheat, which does not work
+here. For Elden Ring that is `Game/eldenring.exe`. It also sets `SteamAppId`,
+which a game needs to reach Steam when started directly.
+
+The app ID works too (`protium run 1245620`), and so does the executable's
+file name (`protium run eldenring.exe`). Tab completion offers all three. If
+protium cannot tell which program is the game, it lists the candidates. Run
+the one you want by its file name or path.
 
 > [!NOTE]
 > The title screen reports `A connection error occurred. Unable to start in
@@ -149,6 +155,9 @@ login path instead.
 protium install list                   # software protium can fetch
 protium install steam                  # install it into the default prefix
 protium install clean                  # delete downloaded installers
+protium run steam                      # start Steam with the arguments it needs
+protium run "elden ring"               # a Steam game, by title or app ID
+protium run eldenring.exe              # any .exe in the prefix, by file name
 protium run ~/Downloads/Setup.exe      # run any Windows program
 protium run "C:\Program Files\…\Game.exe"
 
