@@ -29,15 +29,12 @@ runtime to boot a prefix with — it prints what it is about to do and waits for
 an answer, because a ten-minute build is not what `prefix new` reads like.
 `--force` answers the question in advance.
 
-Two things it does not do.
+It builds the `deps` prefix only where it is missing: a library whose files
+are all in `<root>/deps` already is left alone, so a prefix built by hand is
+kept. What it builds, and how, is [The deps prefix](#the-deps-prefix).
 
-* **It does not build the `deps` prefix.** The x86-64 FreeType, GnuTLS,
-  nettle, hogweed and GMP below have to be there already; the command names
-  what is missing and stops. This document records that they were built shared
-  into that prefix, and what each one is for, but not the configure line that
-  produced them — and a command nobody has written down is not one the program
-  should run for the first time in the middle of a build. The
-  [Toolchain](#toolchain) table is where they come from.
+One thing it does not do.
+
 * **It does not install D3DMetal**, which it cannot: Apple's DMG needs a
   developer sign-in. The Wine it produces runs `protium run cmd /c ver` and no
   Direct3D game; the command finishes by printing the `protium redist` line
@@ -172,6 +169,45 @@ llvm-mingw, because a mingw-w64 GCC for a macOS host is not something to fetch
 and unpack, and carries a patch for the measured case instead (below). The
 general fix — GCC for the PE side, or a unix side that stops trusting the
 upper bits of narrow arguments — is open.
+
+## The deps prefix
+
+`recipe.dep_builds` in `src/recipe.zig` is the recipe, in build order. Each
+library is fetched over HTTPS, refused unless its SHA-256 matches, and
+configured with `--host=x86_64-apple-darwin --enable-shared --disable-static
+--prefix=<root>/deps` plus its own arguments. The environment is
+`PATH=/usr/bin:/bin:/usr/sbin:/sbin`, `CC="/usr/bin/clang -arch x86_64"`,
+`CFLAGS=-O2`, `CPPFLAGS`/`LDFLAGS` pointing at the prefix, and
+`PKG_CONFIG_LIBDIR` confined to it, so nothing from Homebrew (arm64) is found.
+
+| Library | Archive sha256 | Signature |
+| --- | --- | --- |
+| GMP 6.3.0 | `a3c2b802…538898` | good, key in the GNU keyring |
+| Nettle 3.10 | `b4c518ad…94ee47c` | good, key in the GNU keyring |
+| GnuTLS 3.8.4 | `2bea4e15…ebc3a9b` | good, from Zoltan Fridrich's key (`5D46CB0F…B3F9220C`), which was fetched from keys.openpgp.org by the signature's own fingerprint and **not confirmed independently** |
+| FreeType 2.13.3 | `05503506…c063289` | **not checked**: the signing key `E3067470…63AD8E3F` is not among the keys Savannah publishes for the project's members |
+
+bison 3.8.2 (`9bba0214…ff5a5bf2`) has a good signature from a key in the GNU
+keyring. The CrossOver archive matches the hash recorded above. llvm-mingw
+20260826 (`48bedd16…d6a7f`) is pinned by the hash of the archive the
+2026-09-08 builds used; nothing was found to check it against.
+
+*Verified on 2026-09-30, on an M4 Mac (macOS 26.6), by running the same
+configure lines from a shell into a scratch prefix.* Against the hand-built
+prefix `wine-11.0-cx26.3-p2` was built from, all five dylibs are `x86_64` with
+the same `.pc` versions, the same `otool -L`, the same minimum macOS (26.0) and
+the same number of exported symbols, and the headers are identical. The one
+difference is `--without-zlib`: the old GnuTLS was built with zlib support,
+which `dlopen`s `libz.so.1` — a Linux name that never resolves on macOS — so
+nothing is lost. An x86_64 test program then loaded `libgnutls.30.dylib` by
+bare soname and completed TLS 1.3 handshakes with `www.gnu.org` and
+`steamcommunity.com` under Rosetta.
+
+**Not yet verified:** a `protium build` from an empty root that builds the
+prefix itself, and a Wine built against the rebuilt prefix. Nettle's
+assembly is its "fat" variant (`x86_64/fat`), which chooses by CPUID at run
+time. Everything is built for macOS 26.0, the build machine's version; nothing
+sets `MACOSX_DEPLOYMENT_TARGET`.
 
 ## Three traps, each of which costs an hour
 
