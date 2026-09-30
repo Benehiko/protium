@@ -27,7 +27,7 @@
 
 const std = @import("std");
 
-/// The name protium installs this as, and the name it moves Valve's own
+/// The name protium installs this as, and the name it copies Valve's own
 /// binary to. `catalog.zig` holds the same two strings and a test that they
 /// agree; changing one here without the other leaves a stand-in that launches
 /// itself for ever.
