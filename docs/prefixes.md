@@ -188,15 +188,16 @@ copying or moving a prefix carries its settings with it.
 
 ## A prefix protium made has no 32-bit side
 
-`protium prefix new` runs Wine's own `wineboot`, and on this build that stops
-before it fills `drive_c/windows/syswow64`. The directory is created and left
-empty, so no 32-bit Windows program starts in the prefix — the loader reports
-`could not load kernel32.dll, status c0000135`.
+**This no longer reproduces.** On 2026-09-06, `protium prefix new` ran Wine's
+`wineboot`, which stopped before it filled `drive_c/windows/syswow64`. The
+directory was left empty, so no 32-bit Windows program started in the prefix,
+and the loader reported `could not load kernel32.dll, status c0000135`. Since
+2026-09-07, new prefixes on the same runtime come out with `syswow64` filled
+from the runtime's own modules, and 32-bit programs, Steam's installer among
+them, run. Nothing that explains the change was measured.
 
-This is not a limitation of the Wine, whose 32-bit module tree is complete: it
-is a step of prefix creation that does not finish. 64-bit programs, which is
-most modern games, are unaffected. The measurements, and the one 32-bit
-installer it currently blocks, are in
+`protium install` still reads an installer's architecture before it runs it,
+and refuses a 32-bit one if `syswow64` is empty. Both measurements are in
 [`install.md`](install.md#a-32-bit-installer-cannot-run-in-a-prefix-protium-made).
 
 ## Launching without the shell hook

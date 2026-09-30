@@ -85,42 +85,34 @@ looks like a network fault ([why](docs/wine-build.md#winemsync1-is-not-optional)
 It runs the installer, applies the fix that makes Steam's window paint
 ([details](docs/steam-rendering.md)), and prints the launch command.
 
-> [!WARNING]
-> **On a fresh prefix, this stops before installing, and says so.** Valve's
-> installer is 32-bit, and `protium prefix new` leaves `syswow64` empty, so no
-> 32-bit program starts. The Wine itself is fine: Steam installs and runs in a
-> prefix whose `syswow64` was filled some other way.
-> [docs/install.md](docs/install.md#a-32-bit-installer-cannot-run-in-a-prefix-protium-made)
-> has the measurements.
-
-Start Steam with all three arguments:
+Start Steam:
 
 ```sh
-protium run "C:\Program Files (x86)\Steam\steam.exe" \
-    -noreactlogin -noverifyfiles -norepairfiles
+protium run steam
 ```
 
-Without `-noverifyfiles -norepairfiles`, Steam restores its own files, removes
-the rendering fix, and its window goes black. After a Steam update, or whenever
-the window goes black, run `protium install steam` again. It leaves Steam alone
-and restores the fix.
+protium adds the three arguments Steam needs here: `-noreactlogin`,
+`-noverifyfiles` and `-norepairfiles`. Without the last two, Steam restores its
+own files, removes the rendering fix, and its window goes black. After a Steam
+update, or whenever the window goes black, run `protium install steam` again.
+It leaves Steam alone and restores the fix.
 
 Sign in **online, once**, so Steam caches your credentials and licences. Then
 install games from Steam as usual.
 
 ### 5. Play
 
-Start the game's executable directly, with Steam signed in and running. For
-Elden Ring:
+With Steam signed in and running, start the game by its executable's name.
+For Elden Ring:
 
 ```sh
-SteamAppId=1245620 protium run \
-  "C:\Program Files (x86)\Steam\steamapps\common\ELDEN RING\Game\eldenring.exe"
+protium run eldenring.exe
 ```
 
-Running `eldenring.exe` instead of `start_protected_game.exe` skips Easy
-Anti-Cheat, which does not work here. `SteamAppId` tells the game which Steam
-app it is when no `steam_appid.txt` sits beside the executable.
+protium finds the file in the prefix and sets `SteamAppId` from the manifest
+Steam wrote when it installed the game. A game needs that ID to reach Steam
+when it is started directly. Running `eldenring.exe` instead of
+`start_protected_game.exe` skips Easy Anti-Cheat, which does not work here.
 
 > [!NOTE]
 > The title screen reports `A connection error occurred. Unable to start in
@@ -148,11 +140,8 @@ to your account's block in
 
 These flags are not enough on their own. Steam chooses offline mode on its CEF
 login page, which often never renders here, and the client stays logged off.
-Start Steam on the legacy login path instead:
-
-```sh
-protium run "C:\Program Files (x86)\Steam\steam.exe" -noreactlogin
-```
+`protium run steam` passes `-noreactlogin`, which starts Steam on the legacy
+login path instead.
 
 ## Everyday use
 
@@ -226,11 +215,12 @@ protium is early. Here is what works and what does not.
   update undoes it, and other CEF programs still render black. The real fix
   belongs in Wine. `protium install steam --undo` reverts it.
   See [docs/steam-rendering.md](docs/steam-rendering.md).
-* **Broken:** 32-bit programs in a prefix made by `protium prefix new`.
-  `wineboot` leaves `syswow64` empty, so no 32-bit program starts, and this
-  blocks `protium install steam` on a fresh prefix. The Wine's 32-bit modules
-  are complete and work once the directory is filled.
-  See [docs/install.md](docs/install.md#a-32-bit-installer-cannot-run-in-a-prefix-protium-made).
+* **Works, cause unexplained:** 32-bit programs, Steam's installer among
+  them. On 2026-09-06 `wineboot` left `syswow64` empty in new prefixes, and
+  nothing 32-bit started. Since 2026-09-07 it fills the directory, with nothing
+  changed that we know of. `protium install` still checks, and refuses a 32-bit
+  installer if the directory is empty.
+  See [docs/install.md](docs/install.md#syswow64-fills-itself-now).
 * **Designed, not built:** talking to the native macOS Steam client, as
   Proton's `lsteamclient` does on Linux.
   See [docs/steam-bridge.md](docs/steam-bridge.md).
