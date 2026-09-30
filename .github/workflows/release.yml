@@ -1,0 +1,68 @@
+name: release
+
+# Pushing a `v*` tag builds, signs and publishes a release. The steps are the
+# Makefile's (`package`, `sign`, `notes`), so they can be tried by hand; this
+# file supplies the machine, the permissions and the upload.
+# docs/releasing.md says how to cut one.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: macos-15
+    permissions:
+      # Create the release and upload to it.
+      contents: write
+      # Let the job ask GitHub for an OIDC token. cosign trades it for a
+      # short-lived certificate naming this workflow; nothing is stored.
+      id-token: write
+    env:
+      VERSION: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The whole history, so the next step can ask whether the tag is on
+          # main.
+          fetch-depth: 0
+
+      # checkout fetches a tag by commit, which leaves a lightweight tag and
+      # loses the message the release notes are made from. Fetch the tag
+      # object itself.
+      - name: annotated tag
+        run: git fetch --force origin "+refs/tags/${VERSION}:refs/tags/${VERSION}"
+
+      # A tag on a branch nobody reviewed would still be signed as this
+      # workflow, so refuse it.
+      - name: tag is on main
+        run: |
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "$VERSION does not point at a commit on main" >&2
+            exit 1
+          }
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - uses: sigstore/cosign-installer@v4
+
+      # Refuses a tag that disagrees with `protium_version` in src/main.zig.
+      - name: package
+        run: make package VERSION="$VERSION"
+
+      - name: sign
+        run: make sign VERSION="$VERSION"
+
+      - name: notes
+        run: make notes VERSION="$VERSION"
+
+      - name: publish
+        run: |
+          gh release create "$VERSION" --verify-tag --title "protium $VERSION" \
+            --notes-file dist/notes.md \
+            dist/protium-"$VERSION"-*.tar.gz dist/SHA256SUMS dist/SHA256SUMS.sigstore.json

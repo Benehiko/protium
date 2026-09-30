@@ -30,7 +30,7 @@ pub fn build(b: *std.Build) void {
     // every time Steam started a helper process.
     webhelper.subsystem = .Windows;
 
-    // `make release` sets this. A release binary should not carry debug info
+    // `make package` sets this. A release binary should not carry debug info
     // that names paths on the machine that built it, and stripping has to
     // happen here, at link time: `strip` run afterwards would invalidate the
     // linker's ad-hoc signature, and Apple silicon kills an arm64 binary
