@@ -283,7 +283,9 @@ formatting and a build — and leaves the test suite to CI. `git commit
 
 protium's own code is **[Apache 2.0](LICENSE)**. It vendors nothing: no
 dependencies, no bundled sources, and no linking against either half it
-assembles.
+assembles. The exception is the Wine patches in [`patches/`](patches/README.md),
+which the binary carries so `protium build` can apply them: they change Wine,
+so they are LGPL-2.1-or-later like Wine.
 
 The two halves it assembles are not protium's to license, and their terms are
 recorded with the versions and evidence behind them in

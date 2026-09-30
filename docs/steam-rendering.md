@@ -38,7 +38,7 @@ Steam will not pass the switch on. `steam.exe` forwards exactly six `-cef-*`
 flags and drops anything else, and there is no config file, environment
 variable or registry key that adds one. So protium writes a stand-in
 `steamwebhelper.exe` into the prefix. It appends the switch and launches
-Valve's binary, which is moved to `steamwebhelper-real.exe` beside it.
+Valve's binary, which is copied to `steamwebhelper-real.exe` beside it.
 
 The stand-in is `src/webhelper.zig`, cross-compiled to `x86_64-windows` by
 `build.zig` and embedded in the protium binary. Nothing is vendored and no PE

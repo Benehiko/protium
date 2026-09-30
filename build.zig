@@ -30,12 +30,20 @@ pub fn build(b: *std.Build) void {
     // every time Steam started a helper process.
     webhelper.subsystem = .Windows;
 
+    // `make release` sets this. A release binary should not carry debug info
+    // that names paths on the machine that built it, and stripping has to
+    // happen here, at link time: `strip` run afterwards would invalidate the
+    // linker's ad-hoc signature, and Apple silicon kills an arm64 binary
+    // whose signature does not match.
+    const strip = b.option(bool, "strip", "Omit debug info from the protium binary");
+
     const exe = b.addExecutable(.{
         .name = "protium",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .strip = strip,
         }),
     });
     // Embedded rather than installed beside the binary: protium stays one file

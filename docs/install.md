@@ -122,7 +122,7 @@ This is the most invasive thing `install` does, so it is bounded:
   would destroy the only copy of the program's own binary.
 
 The stand-in is not a binary checked into this repository. It is
-[`src/webhelper.zig`](../src/webhelper.zig), about eighty lines, cross-compiled
+[`src/webhelper.zig`](../src/webhelper.zig), under a hundred lines of code, cross-compiled
 to `x86_64-windows` by `build.zig` and embedded in the protium binary — Zig
 cross-compiles to Windows with nothing extra installed, so the same `zig build`
 produces both. protium stays one file, and the PE it writes is one you can read
