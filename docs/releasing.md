@@ -1,14 +1,15 @@
 # Releasing protium
 
-Releases are built, signed and published from a Mac, by hand, with `make`.
-Nothing is built or signed in CI; CI only checks that the release shape still
-builds (`make check-release`).
+A release is built, signed and published by GitHub Actions when a `v*` tag is
+pushed (`.github/workflows/release.yml`). The steps live in the `Makefile`, so
+the workflow and a person trying the packaging run the same commands.
 
 ## What a release is
 
 One archive per supported host — today only `macos-aarch64`, because protium
 refuses an Intel Mac (`src/doctor.zig`) — plus `SHA256SUMS` and one signature
-over it, `SHA256SUMS.sigstore.json`.
+over it, `SHA256SUMS.sigstore.json`. The release notes carry how to verify and
+install the download.
 
 ```
 protium-v0.1.0-macos-aarch64/
@@ -24,13 +25,6 @@ A release never contains Wine or D3DMetal. See
 [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md#what-protium-distributes) for
 why each file above is there.
 
-## Once per machine
-
-```sh
-brew install cosign gh
-gh auth login
-```
-
 ## Every release
 
 1. Bump `protium_version` in `src/main.zig` and `.version` in `build.zig.zon`,
@@ -40,23 +34,48 @@ gh auth login
 2. `make tag VERSION=v0.1.0` — an annotated tag, locally. An editor opens:
    the tag message becomes the release notes, so write them there.
 
-3. `make release VERSION=v0.1.0` — refuses a dirty tree or a HEAD not tagged
-   `VERSION`, then runs the tests, builds, packages into `dist/`, and signs.
-   A browser opens once: sign in to GitHub and **choose the noreply address**
-   (`18033717+Benehiko@users.noreply.github.com`). Whichever address you pick
-   goes into the certificate and Sigstore's public transparency log, and the
-   release then verifies the signature against `COSIGN_IDENTITY` straight away,
-   so picking a different one fails here rather than for a user.
+3. `git push origin v0.1.0`. The workflow then:
 
-4. Look at `dist/`. Nothing is public yet.
+   1. refuses a tag that is not on `main`;
+   2. runs the tests and builds and packages into `dist/` (`make package`);
+   3. signs `SHA256SUMS` with cosign, and verifies the signature as a user
+      will (`make sign`);
+   4. writes the notes (`make notes`): the tag message, then
+      `tools/release-notes.md` with the version and identity filled in;
+   5. creates the GitHub release with the archive, `SHA256SUMS` and the bundle.
 
-5. `make publish VERSION=v0.1.0` — pushes the tag and creates the GitHub
-   release with the archive, `SHA256SUMS` and the bundle. The notes are the
-   tag message followed by `tools/release-notes-footer.md`, which tells users
-   how to verify the download and get past Gatekeeper.
+4. Watch the run under the repository's Actions tab, then open the release
+   and read its notes.
 
-`make package VERSION=v0.1.0` does step 3 without the tag check and without
-signing, for trying the packaging out.
+`make package VERSION=v0.1.0` does step 3.2 on a Mac without signing, for
+trying the packaging out. `make notes VERSION=v0.1.0` renders the notes into
+`dist/` for a tag that exists locally.
+
+## Signing
+
+The signature is keyless, made by the workflow. There is no key and no secret:
+the job has `id-token: write`, GitHub gives it a short-lived OIDC token, and
+cosign trades that for a certificate that names the workflow. The signature
+and certificate go into Sigstore's public transparency log.
+
+What a user verifies against is therefore the workflow, not a person:
+
+```
+--certificate-identity https://github.com/Benehiko/protium/.github/workflows/release.yml@refs/tags/v0.1.0
+--certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+* **Renaming `release.yml` changes the identity**, and with it what every
+  later release verifies against. `COSIGN_IDENTITY` in the `Makefile` and the
+  notes follow it; a release cut before the rename still verifies against the
+  old name.
+* **Whoever can push a `v*` tag can publish a release that verifies.** Protect
+  the pattern with a tag ruleset (Settings → Rules → Rulesets, target tags,
+  pattern `v*`) so only maintainers can create them. The workflow also
+  refuses a tag that is not on `main`.
+* Signing only works in the workflow. Run anywhere else, `make sign` opens a
+  browser and then fails its own verification, because the identity is not the
+  workflow's.
 
 ## Choices, and why
 
@@ -71,14 +90,8 @@ signing, for trying the packaging out.
   binary whose signature does not match.
 * **One signature, over `SHA256SUMS`.** The manifest pins every archive, so
   signing it is the same claim as signing each archive.
-* **Keyless cosign.** There is no key to keep safe; the certificate records
-  who signed and Sigstore's log makes it public.
-* **Not notarized.** That needs a paid Apple Developer ID. The footer tells
+* **Keyless cosign, as the workflow.** There is no key to keep safe or rotate,
+  and no browser step to do by hand; the certificate records which workflow
+  at which tag signed, and Sigstore's log makes it public.
+* **Not notarized.** That needs a paid Apple Developer ID. The notes tell
   users how to clear the quarantine after verifying.
-
-## Signing in CI instead
-
-cosign can sign keyless from a GitHub Actions workflow with `id-token: write`,
-and no browser. The identity a user verifies against then becomes the
-workflow file, not the maintainer's account, so the footer's verify command
-would change with it.

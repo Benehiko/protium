@@ -23,7 +23,7 @@ Apache-2.0-only protium code:
 * **The `steamwebhelper.exe` stand-in**, built from `src/webhelper.zig`. That
   is protium's own code, and is Apache 2.0.
 
-A release archive (`make release`, [docs/releasing.md](docs/releasing.md))
+A release archive (`make package`, [docs/releasing.md](docs/releasing.md))
 carries the licence text for each: `LICENSE` and `NOTICE`,
 `licenses/LGPL-2.1.txt` with the patches beside it in `patches/`, and
 `licenses/zig-MIT.txt` taken from the Zig toolchain that built the binary.
@@ -103,7 +103,7 @@ because the list changes between releases.
 | **Copyright** | Zig contributors |
 
 The only third-party code linked into the protium binary. MIT asks that its
-notice travel with copies, so `make release` copies it from the toolchain that
+notice travel with copies, so `make package` copies it from the toolchain that
 did the build, and refuses to package without it.
 
 ## Build-time tools

@@ -1,7 +1,9 @@
-.PHONY: build test check-release tag package package-host release publish
+.PHONY: build test check-release tag package package-host notes sign verify
 
-# Releases are built, signed and published from a Mac by hand. The steps and
-# the reasons behind them are in docs/releasing.md.
+# A release is built, signed and published by GitHub Actions when a `v*` tag
+# is pushed (.github/workflows/release.yml). This file holds the steps, so the
+# workflow and a person trying the packaging run the same commands. The
+# reasons are in docs/releasing.md.
 
 build:
 	zig build
@@ -38,25 +40,19 @@ RELEASE_FLAGS = -Doptimize=ReleaseSafe -Dstrip=true
 ZIG_LIB := $(shell zig env 2>/dev/null | sed -n 's/.*\.lib_dir = "\(.*\)",/\1/p')
 ZIG_LICENSE ?= $(firstword $(wildcard $(ZIG_LIB)/../LICENSE $(ZIG_LIB)/../../LICENSE))
 
-# cosign, for the signature over SHA256SUMS. A host `cosign` wins; otherwise
-# the official image under whichever container runtime is here. `-it` because
-# keyless signing prints a URL and waits, `--network host` because the OIDC
-# callback returns to localhost, `--user 0:0` so a rootless runtime writes the
-# bundle as the invoking user.
-CONTAINER ?= $(firstword $(foreach c,nerdctl podman docker,$(shell command -v $(c) 2>/dev/null)))
-COSIGN ?= $(if $(shell command -v cosign 2>/dev/null),cosign,$(if $(CONTAINER),$(CONTAINER) run --rm -it --network host \
-	--user 0:0 -e HOME=/tmp -v "$(CURDIR)/$(DIST)":/work -w /work \
-	ghcr.io/sigstore/cosign/cosign:latest))
 
 # The identity a user verifies a release against, written into the release
-# notes. The GitHub noreply alias, not a personal address: whichever address
-# is picked on GitHub's consent screen goes into the certificate and into
-# Sigstore's public, permanent transparency log. It is also the address every
-# commit here is authored with.
-COSIGN_IDENTITY ?= 18033717+Benehiko@users.noreply.github.com
-COSIGN_ISSUER ?= https://github.com/login/oauth
+# notes. The signature is made keyless by the release workflow, so the
+# certificate names that workflow file at the tag it ran for, and GitHub's
+# OIDC issuer vouches for it. Change the workflow's file name and this changes
+# with it, or every release stops verifying.
+REPO ?= Benehiko/protium
+COSIGN_IDENTITY ?= https://github.com/$(REPO)/.github/workflows/release.yml@refs/tags/$(VERSION)
+COSIGN_ISSUER ?= https://token.actions.githubusercontent.com
 
-NOTES_FOOTER ?= tools/release-notes-footer.md
+# The release notes template: what is in the download, how to verify it, how
+# to install it. `notes` fills in the @...@ markers.
+NOTES_TEMPLATE ?= tools/release-notes.md
 
 # ── make check-release ──────────────────────────────────────────────────
 #
@@ -140,69 +136,41 @@ package-host:
 	COPYFILE_DISABLE=1 tar -C $(DIST) -czf $(STAGE).tar.gz protium-$(VERSION)-$(HOST)
 	rm -rf $(STAGE) $(DIST)/.build-$(HOST)
 
-# ── make release ────────────────────────────────────────────────────────
+# ── make sign ───────────────────────────────────────────────────────────
 #
-# `package` from a clean, tagged tree, then sign. Publishes nothing: `publish`
-# does that, so there is a moment to look at $(DIST) first.
-release:
-	@test -n "$(VERSION)" || { echo "make release: set VERSION, e.g. make release VERSION=v0.1.0" >&2; exit 1; }
-	@test -z "$$(git status --porcelain)" || { echo "make release: the tree is dirty -- commit or stash first" >&2; exit 1; }
-	@described=$$(git describe --tags --exact-match 2>/dev/null); \
-		test "$$described" = "$(VERSION)" || { \
-			echo "make release: HEAD is not tagged $(VERSION) (git describe says '$$described')" >&2; \
-			echo "  run: make tag VERSION=$(VERSION)" >&2; \
-			exit 1; }
-	@test -n "$(COSIGN)" || { \
-		echo "make release: no cosign and no container runtime (nerdctl, podman or docker)" >&2; \
-		echo "  brew install cosign, or set COSIGN=<command>" >&2; \
-		exit 1; }
-	$(MAKE) --no-print-directory package VERSION=$(VERSION)
-	@echo
-	@echo "signing SHA256SUMS with cosign -- a browser opens once."
-	@echo "choose $(COSIGN_IDENTITY) on GitHub's consent screen."
-	@# One bundle (signature, certificate and transparency-log proof in one
-	@# file): cosign 3 refuses the separate .sig and .pem outputs.
-	cd $(DIST) && $(COSIGN) sign-blob --yes SHA256SUMS --bundle SHA256SUMS.sigstore.json
-	@test -r $(DIST)/SHA256SUMS.sigstore.json || { \
-		echo "make release: the signature bundle is not readable by this account" >&2; exit 1; }
-	@# Verify exactly as a user will. Signing in with any other address than
-	@# COSIGN_IDENTITY fails here rather than on someone else's machine.
-	cd $(DIST) && $(COSIGN) verify-blob SHA256SUMS --bundle SHA256SUMS.sigstore.json \
-		--certificate-identity "$(COSIGN_IDENTITY)" --certificate-oidc-issuer "$(COSIGN_ISSUER)"
-	@echo
-	@ls -la $(DIST)
-	@echo
-	@echo "built and signed. Nothing is published yet."
-	@echo "next: make publish VERSION=$(VERSION)"
+# Sign $(DIST)/SHA256SUMS keylessly, then verify it as a user will. Meant for
+# the release workflow: cosign takes the job's OIDC token from the
+# environment, so there is nothing to log in to. Anywhere else cosign opens a
+# browser, and the check below fails because the identity is not the workflow.
+#
+# One bundle (signature, certificate and transparency-log proof in one file):
+# cosign 3 refuses the separate .sig and .pem outputs.
+sign:
+	@test -n "$(VERSION)" || { echo "make sign: set VERSION, e.g. make sign VERSION=v0.1.0" >&2; exit 1; }
+	@test -f $(DIST)/SHA256SUMS || { echo "make sign: no $(DIST)/SHA256SUMS -- run make package first" >&2; exit 1; }
+	cd $(DIST) && cosign sign-blob --yes SHA256SUMS --bundle SHA256SUMS.sigstore.json
+	$(MAKE) --no-print-directory verify VERSION=$(VERSION)
 
-# ── make publish ────────────────────────────────────────────────────────
-#
-# Push the tag and create the GitHub release. The one step that cannot be
-# quietly undone, so it re-checks what it is about to upload rather than
-# trusting that `release` ran.
-publish:
-	@test -n "$(VERSION)" || { echo "make publish: set VERSION, e.g. make publish VERSION=v0.1.0" >&2; exit 1; }
-	@test -f $(DIST)/SHA256SUMS.sigstore.json || { \
-		echo "make publish: $(DIST) is not signed -- run make release VERSION=$(VERSION) first" >&2; exit 1; }
-	@for host in $(RELEASE_HOSTS); do \
-		test -f $(DIST)/protium-$(VERSION)-$$host.tar.gz || { \
-			echo "make publish: no $(DIST)/protium-$(VERSION)-$$host.tar.gz" >&2; exit 1; }; \
-	done
+# Check the signature against the identity written into the notes, and the
+# archives against the checksums it covers, in that order.
+verify:
+	@test -n "$(VERSION)" || { echo "make verify: set VERSION, e.g. make verify VERSION=v0.1.0" >&2; exit 1; }
+	cd $(DIST) && cosign verify-blob SHA256SUMS --bundle SHA256SUMS.sigstore.json \
+		--certificate-identity "$(COSIGN_IDENTITY)" --certificate-oidc-issuer "$(COSIGN_ISSUER)"
 	cd $(DIST) && shasum -a 256 -c SHA256SUMS
-	@test "$$(git rev-parse "$(VERSION)^{commit}" 2>/dev/null)" = "$$(git rev-parse HEAD)" || { \
-		echo "make publish: $(VERSION) does not point at HEAD -- $(DIST) may be from another commit" >&2; exit 1; }
-	@! gh release view "$(VERSION)" >/dev/null 2>&1 || { \
-		echo "make publish: a $(VERSION) release already exists on GitHub" >&2; exit 1; }
+
+# ── make notes ──────────────────────────────────────────────────────────
+#
+# The release notes: the annotated tag's message, then the template with this
+# release's version and identity filled in. A lightweight tag contributes its
+# commit's message instead.
+notes:
+	@test -n "$(VERSION)" || { echo "make notes: set VERSION, e.g. make notes VERSION=v0.1.0" >&2; exit 1; }
+	@mkdir -p $(DIST)
 	git for-each-ref --format='%(contents:subject)%0a%0a%(contents:body)' "refs/tags/$(VERSION)" > $(DIST)/notes.md
 	sed -e 's|@VERSION@|$(VERSION)|g' \
 		-e 's|@COSIGN_IDENTITY@|$(COSIGN_IDENTITY)|g' \
 		-e 's|@COSIGN_ISSUER@|$(COSIGN_ISSUER)|g' \
-		$(NOTES_FOOTER) >> $(DIST)/notes.md
-	git push origin "$(VERSION)"
-	gh release create "$(VERSION)" --verify-tag --title "protium $(VERSION)" \
-		--notes-file $(DIST)/notes.md \
-		$(DIST)/protium-$(VERSION)-*.tar.gz $(DIST)/SHA256SUMS $(DIST)/SHA256SUMS.sigstore.json
-	@echo
-	@echo "published. Users verify against:"
-	@echo "  --certificate-identity $(COSIGN_IDENTITY)"
-	@echo "  --certificate-oidc-issuer $(COSIGN_ISSUER)"
+		$(NOTES_TEMPLATE) >> $(DIST)/notes.md
+	@! grep -n '@[A-Z_]*@' $(DIST)/notes.md || { echo "make notes: a marker above was not filled in" >&2; exit 1; }
+

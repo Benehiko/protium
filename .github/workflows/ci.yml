@@ -22,7 +22,7 @@ jobs:
         run: zig build
       - name: test
         run: zig build test
-      # The shape `make release` ships: ReleaseSafe, stripped, aarch64-macos.
+      # The shape `make package` ships: ReleaseSafe, stripped, aarch64-macos.
       # Built here so a release never discovers it broke.
       - name: release build
         run: make check-release
