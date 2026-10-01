@@ -55,12 +55,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # checkout fetches a tag by commit, which leaves a lightweight tag and
-      # loses the message the release notes are made from. Fetch the tag
-      # object itself.
-      - name: annotated tag
-        run: git fetch --force origin "+refs/tags/${VERSION}:refs/tags/${VERSION}"
-
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.16.0
