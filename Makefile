@@ -111,7 +111,8 @@ package-host:
 	@echo "--- $(HOST) ---"
 	@# An explicit target rather than native, so the binary is built for the
 	@# baseline every Apple silicon Mac has, not for this machine's CPU.
-	zig build $(RELEASE_FLAGS) -Dversion=$(SOURCE_VERSION) -Dtarget=$(ZIG_TARGET_$(HOST)) --prefix $(DIST)/.build-$(HOST)
+	zig build $(RELEASE_FLAGS) -Dversion=$(SOURCE_VERSION) -Dtarget=$(ZIG_TARGET_$(HOST)) \
+		$(if $(RUNTIME_SHA256),-Druntime_sha256=$(RUNTIME_SHA256)) --prefix $(DIST)/.build-$(HOST)
 	mkdir -p $(STAGE)/licenses $(STAGE)/patches
 	cp $(DIST)/.build-$(HOST)/bin/protium $(STAGE)/
 	cp README.md LICENSE NOTICE THIRD-PARTY-NOTICES.md $(STAGE)/
@@ -134,6 +135,15 @@ package-host:
 	@# COPYFILE_DISABLE keeps macOS tar from adding ._ AppleDouble files.
 	COPYFILE_DISABLE=1 tar -C $(DIST) -czf $(STAGE).tar.gz protium-$(VERSION)-$(HOST)
 	rm -rf $(STAGE) $(DIST)/.build-$(HOST)
+
+# ── make sums ───────────────────────────────────────────────────────────
+#
+# SHA256SUMS over every archive in $(DIST). The release workflow runs it after
+# adding the runtime and its sources, so the one signature covers all of them.
+sums:
+	@ls $(DIST)/*.tar.* > /dev/null || { echo "make sums: no archives in $(DIST)" >&2; exit 1; }
+	cd $(DIST) && shasum -a 256 *.tar.* > SHA256SUMS
+	@cat $(DIST)/SHA256SUMS
 
 # ── make sign ───────────────────────────────────────────────────────────
 #

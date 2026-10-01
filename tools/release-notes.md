@@ -3,11 +3,26 @@
 
 ## What is in this download
 
-One archive, `protium-@VERSION@-macos-aarch64.tar.gz`, for Apple silicon Macs.
-It holds the `protium` binary and its licence texts. It does **not** hold Wine
-or D3DMetal: `protium build` builds Wine on your Mac from CodeWeavers' published
-sources, and D3DMetal comes from Apple's Game Porting Toolkit, which you
-download yourself (see the README).
+For Apple silicon Macs:
+
+* `protium-@VERSION@-macos-aarch64.tar.gz`: the `protium` binary and its
+  licence texts. This is the one you download.
+* `wine-…-macos-x86_64.tar.gz`: the Wine runtime this release was built with.
+  You do not download it yourself: `protium runtime install` fetches it and
+  installs it only if its SHA-256 matches the one compiled into protium. It
+  loads on macOS 15 and later. It was checked on macOS 15 by the workflow that
+  built it, and played on macOS 26. Its licence texts are inside it, in
+  `licenses/`.
+* The source archives that runtime was built from: CrossOver's published
+  sources, which carry Wine and the libraries it links in, and FreeType,
+  GnuTLS, Nettle and GMP.
+
+It does **not** hold D3DMetal, which comes from Apple's Game Porting Toolkit
+and which you download yourself (see the README). Apple's D3DMetal 4.0b2 needs
+macOS 26.4 or later. Wine Mono, Wine's .NET runtime, is fetched by
+`protium prefix new` when it creates a prefix.
+
+This software is based in part on the work of the Independent JPEG Group.
 
 ## Verifying this download
 
@@ -39,10 +54,11 @@ the signature is recorded in Sigstore's public transparency log.
 **2. Check the archive against the checksums.**
 
 ```sh
-shasum -a 256 -c SHA256SUMS
+shasum -a 256 -c --ignore-missing SHA256SUMS
 ```
 
-The archive must be listed as `OK`.
+The archive must be listed as `OK`. `SHA256SUMS` also lists the runtime and its
+sources, and `--ignore-missing` skips the ones you did not download.
 
 Step 1 is what makes step 2 mean anything: checksums downloaded from the same
 page as the archive only prove the two agree, not that either came from us.
@@ -63,10 +79,17 @@ Any directory on your `PATH` will do in place of `/usr/local/bin`; without
 Then let protium tell you what is left to do:
 
 ```sh
-protium doctor   # does this Mac have what building Wine needs?
-protium build    # build Wine from CodeWeavers' sources
-protium status   # where the installation is, and the next step
+protium runtime install   # the Wine this release was built with
+protium status            # where the installation is, and the next step
 ```
+
+To build the same Wine on your Mac instead, run `protium doctor` and then
+`protium build` in place of `protium runtime install`.
+
+## Known issues
+
+* Elden Ring ends in a Wine crash report when you quit it from its menu, after
+  the game has already stopped. See `docs/quit-crash.md` in the repository.
 
 The README covers D3DMetal, which comes from Apple, and `protium shell-init`
 prints the line that makes prefixes automatic in every new terminal.

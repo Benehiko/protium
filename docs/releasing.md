@@ -6,10 +6,12 @@ the workflow and a person trying the packaging run the same commands.
 
 ## What a release is
 
-One archive per supported host — today only `macos-aarch64`, because protium
-refuses an Intel Mac (`src/doctor.zig`) — plus `SHA256SUMS` and one signature
-over it, `SHA256SUMS.sigstore.json`. The release notes carry how to verify and
-install the download.
+One protium archive per supported host — today only `macos-aarch64`, because
+protium refuses an Intel Mac (`src/doctor.zig`) — the Wine runtime the
+`wine-build` workflow built for the release, the source archives that runtime
+was built from, and `SHA256SUMS` over all of them with one signature,
+`SHA256SUMS.sigstore.json`. The release notes carry how to verify and install
+the download.
 
 ```
 protium-v0.1.0-macos-aarch64/
@@ -21,9 +23,22 @@ protium-v0.1.0-macos-aarch64/
   licenses/zig-MIT.txt    Zig's, for the standard library linked in
 ```
 
-A release never contains Wine or D3DMetal. See
-[THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md#what-protium-distributes) for
-why each file above is there.
+```
+wine-11.0-cx26.3-p2-macos-x86_64.tar.gz
+  wine-11.0-cx26.3-p2/    the runtime, as `protium build` installs it
+    licenses/             Wine's, the libraries it links in, and the libraries in lib/
+crossover-sources-26.3.0.tar.gz  freetype-…  gnutls-…  nettle-…  gmp-…
+                          the exact sources the runtime was built from
+```
+
+protium is built with the runtime archive's SHA-256 compiled in
+(`-Druntime_sha256`, `make package RUNTIME_SHA256=…`), so `protium runtime
+install` takes that archive and nothing else. The signature covers protium, and
+protium vouches for the runtime.
+
+A release never contains D3DMetal. See
+[THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md) for which licence covers
+each file above, and why each is there.
 
 ## Every release
 

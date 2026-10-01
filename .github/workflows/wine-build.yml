@@ -4,13 +4,19 @@ name: wine-build
 # someone's Mac, and checks what came out. This is the first half of shipping a
 # prebuilt runtime: it proves the recipe runs on a machine nobody prepared, on
 # the oldest macOS the runtime supports (macos-15, see `recipe.macos_min`).
-# The runtime is kept as a workflow artifact for a week, not published.
 #
-# It runs on demand, and on pull requests that change what the runtime is made
-# of. A build takes a long time, so it does not run on every change.
+# It uploads two artifacts: `runtime`, the runtime with every licence text it
+# needs inside it, and `runtime-sources`, the exact source archives it was
+# built from. release.yml calls this workflow and publishes both. Run on its
+# own, it keeps them for a week.
+#
+# It runs on demand, when a release calls it, and on pull requests that change
+# what the runtime is made of. A build takes a long time, so it does not run on
+# every change.
 
 on:
   workflow_dispatch:
+  workflow_call:
   pull_request:
     paths:
       - src/recipe.zig
@@ -90,13 +96,75 @@ jobs:
       # built and passed its checks can be downloaded and tried on a real Mac
       # even when the runner cannot boot it. That is how a failure of the
       # runtime is told apart from a failure of the runner.
+      # Every licence text the runtime's contents ask to travel with them, from
+      # the source trees the build left in $PROTIUM_HOME/build. Which applies to
+      # what is THIRD-PARTY-NOTICES.md. Each expected file is required, so a
+      # missing one fails the build instead of shipping without it.
+      - name: licences
+        run: |
+          set -eu
+          b="$PROTIUM_HOME/build"; l="$PROTIUM_HOME/runtimes/$RUNTIME/licenses"
+          mkdir -p "$l/wine" "$l/wine-libs" "$l/deps"
+          cp "$b/wine/COPYING.LIB" "$b/wine/LICENSE" "$b/wine/AUTHORS" "$l/wine/"
+          for n in capstone compiler-rt faudio fluidsynth gsm jpeg jxr lcms2 ldap mpg123 musl png tiff tomcrypt vkd3d xml2 xslt zlib; do
+            mkdir -p "$l/wine-libs/$n"
+            find "$b/wine/libs/$n" -maxdepth 1 -type f \( -iname 'LICENSE*' -o -iname 'COPYING*' -o -iname 'COPYRIGHT*' \) -exec cp {} "$l/wine-libs/$n/" \;
+            [ -n "$(ls "$l/wine-libs/$n")" ] || { echo "no licence file for libs/$n" >&2; exit 1; }
+          done
+          for d in "$b"/freetype-*/ "$b"/gnutls-*/ "$b"/nettle-*/ "$b"/gmp-*/; do
+            n=$(basename "$d"); mkdir -p "$l/deps/$n"
+            for f in LICENSE LICENSE.TXT COPYING COPYING.LESSERv3 COPYINGv2 COPYINGv3 AUTHORS docs/FTL.TXT docs/GPLv2.TXT; do
+              if [ -f "$d$f" ]; then cp "$d$f" "$l/deps/$n/"; fi
+            done
+            [ -n "$(ls "$l/deps/$n")" ] || { echo "no licence file for $n" >&2; exit 1; }
+          done
+          [ "$(ls "$l/deps" | wc -l)" -eq 4 ] || { echo "expected four libraries in deps" >&2; exit 1; }
+          cat > "$l/README.txt" <<'EOF'
+          Licence texts for what this runtime contains. THIRD-PARTY-NOTICES.md in
+          protium says which applies to what.
+
+            wine/       Wine itself: LGPL-2.1-or-later (COPYING.LIB), and its authors
+            wine-libs/  the libraries Wine links into its own DLLs, one directory each
+            deps/       FreeType, GnuTLS, Nettle (libnettle, libhogweed) and GMP,
+                        copied into lib/
+
+          This software is based in part on the work of the Independent JPEG Group.
+
+          The exact source archives this runtime was built from are published with
+          the protium release it came with, and listed in that release's SHA256SUMS.
+          EOF
+          find "$l" -type f | sed "s|$l/||" | sort
+
       - name: package
         run: tar -C "$PROTIUM_HOME/runtimes" -czf "$RUNNER_TEMP/$RUNTIME-macos-x86_64.tar.gz" "$RUNTIME"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ env.RUNTIME }}-macos-x86_64
+          name: runtime
           path: ${{ runner.temp }}/${{ env.RUNTIME }}-macos-x86_64.tar.gz
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+
+      # The source archives the runtime was built from, exactly as fetched and
+      # checked against the recipe's pins: CrossOver's tree, which carries Wine
+      # and the libraries it links in, and the four libraries in deps. Build
+      # tools (bison, llvm-mingw) are not in the runtime and are not here.
+      - name: sources
+        run: |
+          set -eu
+          b="$PROTIUM_HOME/build"; s="$RUNNER_TEMP/sources"; mkdir -p "$s"
+          for p in 'crossover-sources-*.tar.gz' 'freetype-*.tar.*' 'gnutls-*.tar.*' 'nettle-*.tar.*' 'gmp-*.tar.*'; do
+            set -- $(find "$b" -maxdepth 1 -name "$p")
+            [ "$#" -eq 1 ] || { echo "expected one $p in $b, found $#" >&2; exit 1; }
+            cp "$1" "$s/"
+          done
+          ls -l "$s"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runtime-sources
+          path: ${{ runner.temp }}/sources/
           compression-level: 0
           retention-days: 7
           if-no-files-found: error
