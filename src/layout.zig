@@ -26,6 +26,9 @@ pub const prefixes = "prefixes";
 /// every prefix, and because deleting the whole directory has to be safe: it
 /// holds nothing that cannot be downloaded again.
 pub const downloads = "downloads";
+/// Given to Wine as `XDG_CACHE_HOME` while a prefix is created. Wine reads
+/// add-on installers from `<this>/wine/`; see `recipe.wine_mono`.
+pub const cache_dir = "cache";
 
 /// Where `protium build` works: the archives it fetched, the extracted Wine
 /// tree, the out-of-tree build directory, and the bison and llvm-mingw it

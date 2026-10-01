@@ -19,12 +19,15 @@ Everything protium manages lives under one directory:
 <root>/defaults             which runtime and which prefix to use
 <root>/build/               the Wine build: sources, toolchain, object files
 <root>/deps/                the x86-64 FreeType and GnuTLS Wine is built against
+<root>/cache/wine/          Wine Mono, fetched once for every new prefix
+<root>/downloads/           installers `protium install` fetched
 ```
 
-The last two belong to `protium build` ([`wine-build.md`](wine-build.md)).
+`build/` and `deps/` belong to `protium build` ([`wine-build.md`](wine-build.md)).
 `build/` is kept rather than cleaned up — the source tree in it is the evidence
-for what the runtime beside it actually is — and `deps/` is the one part
-protium does not build for you.
+for what the runtime beside it actually is. `deps/` is built from pinned
+sources when it is missing, and a library already there is kept. `cache/`
+belongs to `protium prefix new`; see [Wine Mono](#wine-mono-is-fetched-once-for-every-prefix).
 
 `<root>` is the first of these that is set:
 
@@ -392,6 +395,45 @@ that cannot be fetched again — the next `protium install` recreates it and
 downloads what it needs. It is described and confirmed exactly like a prefix
 removal, and it uses the same walk, so anything linked into it is unlinked
 rather than followed.
+
+## Wine Mono is fetched once, for every prefix
+
+`wineboot` installs Wine Mono, Wine's own .NET runtime, into every new prefix.
+When it cannot find the installer it opens a "download Wine Mono?" dialog and
+waits for an answer. On a Mac someone is watching, that is a question to click
+through. On a machine nobody is watching, it is a hang: the 2026-10-01 CI run
+sat in `control.exe appwiz.cpl install_mono` until it was cancelled. It never
+happened on the Mac this was developed on, only because
+`~/.cache/wine/wine-mono-10.4.1-x86.msi` had been there since an earlier
+answer.
+
+So `protium prefix new` fetches it itself before running `wineboot`:
+
+* **What.** `wine-mono-10.4.1-x86.msi`, from
+  `https://dl.winehq.org/wine/wine-mono/10.4.1/`. The version and the SHA-256
+  (`071f4b28…ba358e23`) are the ones this Wine pins, `MONO_VERSION` and
+  `MONO_SHA` in `dlls/appwiz.cpl/addons.c` of the CrossOver 26.3.0 tree
+  (`recipe.wine_mono`). Wine's own URL is plain HTTP; WineHQ serves the same
+  file over HTTPS.
+* **Where.** `<root>/cache/wine/`, fetched once and kept. That one `wineboot`
+  is given `XDG_CACHE_HOME=<root>/cache`, which Wine passes in as
+  `WINE_HOST_XDG_CACHE_HOME` and reads add-on installers from `<that>/wine/`,
+  checking the hash itself before it installs. Your own `XDG_CACHE_HOME` is
+  put back afterwards, and nothing in `~/.cache` is touched.
+* **Not inside the runtime.** Wine would also find it in the runtime's
+  `share/wine/mono/`, but the runtime is what gets published, and protium does
+  not redistribute Mono. See [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md#wine-mono).
+* **When it cannot be had.** A failed download or a wrong hash is reported, a
+  wrong file is deleted, and `wineboot` runs as it would have without protium:
+  Wine asks about Mono itself. Creating the prefix does not fail over it.
+
+*Verified 2026-10-01* in a scratch root with an empty `HOME`: `protium prefix
+new` fetched the file (85504000 bytes, the pinned hash), and the prefix got
+`drive_c/windows/mono/mono-2.0` in 22 seconds with no dialog. The empty
+`HOME` gained no `.cache`, so the Mono came from protium's copy.
+
+Deleting `<root>/cache` is safe; the next `protium prefix new` fetches it
+again. `protium install clean` does not touch it.
 
 ## Do not point two different Wines at one prefix
 

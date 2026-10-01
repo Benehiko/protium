@@ -542,6 +542,8 @@ is about to fetch and how long it will take, and waits for an answer;
 `--force` answers in advance. With a runtime installed it goes straight to the
 prefix.
 
+It fetches Wine Mono once into `<root>/cache/wine/`, so that `wineboot` does
+not stop to ask about it ([`prefixes.md`](prefixes.md#wine-mono-is-fetched-once-for-every-prefix)).
 It sets `WINEPREFIX` and the rest for you and runs `wineboot -u`. Expect
 several minutes: it runs `wine.inf` through `setupapi`, and every bit of it is
 x86-64 under Rosetta. protium waits for `wineboot`, then ends the session with
@@ -555,6 +557,7 @@ By hand, the same thing is:
 ```sh
 export WINEPREFIX="<root>/prefixes/default"
 export DYLD_FALLBACK_LIBRARY_PATH="<install>/lib"
+export XDG_CACHE_HOME="<root>/cache"    # where Wine Mono is, or Wine asks for it
 "<install>/bin/wine" wineboot -u
 ```
 

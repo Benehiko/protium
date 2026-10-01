@@ -732,6 +732,20 @@ fn prefixNew(
     );
     try w.flush();
 
+    // Wine Mono where wineboot looks for it, so that it installs .NET instead
+    // of stopping at Wine's "download Wine Mono?" dialog. Only for this
+    // wineboot, and put back afterwards. See `recipe.wine_mono`.
+    const mono_cache = try ensureWineMono(arena, io, sess, w);
+    const inherited_cache = if (vars.get("XDG_CACHE_HOME")) |v| try arena.dupe(u8, v) else null;
+    if (mono_cache) |c| try vars.put("XDG_CACHE_HOME", c);
+    defer if (mono_cache != null) {
+        if (inherited_cache) |v| {
+            vars.put("XDG_CACHE_HOME", v) catch {};
+        } else {
+            _ = vars.swapRemove("XDG_CACHE_HOME");
+        }
+    };
+
     const boot = try spawnWait(io, vars, &.{ loader, "wineboot", "-u" });
     if (boot != 0) {
         try w.print("\nwineboot exited with {d}. The prefix may be incomplete.\n", .{boot});
@@ -1594,6 +1608,52 @@ fn removeDir(io: Io, dir: Io.Dir, name: []const u8, depth: usize) RemoveError!vo
 
 /// How many times a directory is emptied before the removal gives up on it.
 const empty_passes = 64;
+
+/// Wine Mono's installer in protium's cache, verified against the hash this
+/// Wine pins. Returns the directory to hand Wine as `XDG_CACHE_HOME`, or null
+/// when the installer could not be had, in which case Wine asks about it
+/// itself, as it would without protium. Fetched once and kept.
+fn ensureWineMono(
+    arena: std.mem.Allocator,
+    io: Io,
+    sess: session.Session,
+    w: *Io.Writer,
+) !?[]const u8 {
+    const src = recipe.wine_mono;
+    const cache = try sess.join(&.{ sess.root, layout.cache_dir });
+    const dir = try sess.join(&.{ cache, "wine" });
+    try Io.Dir.cwd().createDirPath(io, dir);
+    const dest = try sess.join(&.{ dir, src.archive });
+
+    const fresh = !sess.exists(dest);
+    if (fresh) {
+        try w.print("Fetching Wine Mono {s}, Wine's .NET runtime, once:\n  {s}\n", .{ src.version, src.url });
+        try w.flush();
+    }
+    const report = fetch.download(arena, io, src.url, dest, false) catch |err| {
+        try w.print("protium: Wine Mono could not be fetched ({s}). Wine will ask about it itself.\n\n", .{@errorName(err)});
+        return null;
+    };
+    var hex_buf: [64]u8 = undefined;
+    const got = report.hex(&hex_buf);
+    if (!std.mem.eql(u8, got, src.sha256)) {
+        Io.Dir.cwd().deleteFile(io, dest) catch {};
+        try w.print(
+            \\protium: {s} is not the file this Wine pins, and was deleted.
+            \\  expected sha256 {s}
+            \\  got             {s}
+            \\Wine will ask about Mono itself.
+            \\
+            \\
+        , .{ src.archive, src.sha256, got });
+        return null;
+    }
+    if (fresh) {
+        var size_buf: [64]u8 = undefined;
+        try w.print("  {s}\n  sha256 {s}, as Wine pins it\n\n", .{ fetch.size(&size_buf, report.bytes), got });
+    }
+    return cache;
+}
 
 // ---------------------------------------------------------------------------
 // run

@@ -73,6 +73,29 @@ pub const mingw_source: Source = .{
     .why = "the PE cross-compiler; Apple clang has no mingw driver",
 };
 
+/// Wine Mono, Wine's own .NET runtime, fetched for `protium prefix new` rather
+/// than for the build.
+///
+/// `wineboot` installs it into every new prefix. When it cannot find the
+/// installer it opens a "download Wine Mono?" dialog and waits, which on a
+/// machine nobody is watching is forever (the 2026-10-01 CI run). It looks,
+/// in order, in a registry-named directory, in the runtime's
+/// `share/wine/mono`, and then in `$WINE_HOST_XDG_CACHE_HOME/wine/`, which
+/// Wine fills from the Unix `XDG_CACHE_HOME`; only that last one is checked
+/// against the hash (`dlls/appwiz.cpl/addons.c`). protium uses the cache: the
+/// runtime is what gets published, and protium does not redistribute this.
+///
+/// The version and the hash are the ones this Wine pins: `MONO_VERSION` and
+/// `MONO_SHA` in `dlls/appwiz.cpl/addons.c` of CrossOver 26.3.0's tree. Wine's
+/// own URL is plain HTTP; WineHQ serves the same file over HTTPS.
+pub const wine_mono: Source = .{
+    .archive = "wine-mono-10.4.1-x86.msi",
+    .url = "https://dl.winehq.org/wine/wine-mono/10.4.1/wine-mono-10.4.1-x86.msi",
+    .version = "10.4.1",
+    .sha256 = "071f4b2887e1c97a11d791ff3d65be9429eed6dec4c2708888bfd546ba358e23",
+    .why = "Wine's .NET runtime, which wineboot otherwise stops to ask about",
+};
+
 /// A patch applied to the extracted tree, in this order, before `configure`.
 ///
 /// The order is the name: a runtime built with the first is `-p1`, with both
@@ -545,6 +568,15 @@ test "every source, the libraries' included, is HTTPS and pinned by hash" {
     }
     try testing.expect(!isSha256Hex("AC99c8ca4b3848f3e81784135f023df266b61c2345726ea55a50b3e030dd6872"));
     try testing.expect(!isSha256Hex("ac99"));
+}
+
+test "Wine Mono is the file this Wine asks for, over HTTPS, pinned" {
+    // The name is the one `addons.c` builds from MONO_VERSION and MONO_ARCH,
+    // and Wine looks for exactly that name in the cache.
+    try testing.expectEqualStrings("wine-mono-" ++ wine_mono.version ++ "-x86.msi", wine_mono.archive);
+    try testing.expect(std.mem.startsWith(u8, wine_mono.url, "https://"));
+    try testing.expect(std.mem.endsWith(u8, wine_mono.url, wine_mono.archive));
+    try testing.expect(isSha256Hex(wine_mono.sha256));
 }
 
 test "every library is built after the ones it links against" {
