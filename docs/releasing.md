@@ -47,8 +47,12 @@ each file above, and why each is there.
    `-Dversion=0.1.0` and checks the binary reports it. (`.version` in
    `build.zig.zon` is not used for this; Zig requires it to be a literal.)
 
-2. `make tag VERSION=v0.1.0` — an annotated tag, locally. An editor opens:
-   the tag message becomes the release notes, so write them there.
+2. Write the release notes in `CHANGELOG.md`, under `## v0.2.0`, and merge
+   them like any other change. A pre-release such as `v0.2.0-rc1` uses its
+   version's section. `make notes VERSION=v0.2.0-rc1` shows the result in
+   `dist/notes.md`. Then `make tag VERSION=v0.2.0-rc1`: an annotated tag,
+   locally, with a one-line message and no editor. It refuses a version with no
+   notes in `CHANGELOG.md`.
 
 3. `git push origin v0.1.0`. The workflow then:
 
@@ -56,8 +60,9 @@ each file above, and why each is there.
    2. runs the tests and builds and packages into `dist/` (`make package`);
    3. signs `SHA256SUMS` with cosign, and verifies the signature as a user
       will (`make sign`);
-   4. writes the notes (`make notes`): the tag message, then
-      `tools/release-notes.md` with the version and identity filled in;
+   4. writes the notes (`make notes`): this version's section of
+      `CHANGELOG.md`, then `tools/release-notes.md` with the version and
+      identity filled in;
    5. creates the GitHub release with every archive, `SHA256SUMS` and the
       bundle. A tag with a hyphen, such as `v0.2.0-rc1`, becomes a
       pre-release: published, but never marked as the latest release.
@@ -67,7 +72,7 @@ each file above, and why each is there.
 
 `make package VERSION=v0.1.0` does step 3.2 on a Mac without signing, for
 trying the packaging out. `make notes VERSION=v0.1.0` renders the notes into
-`dist/` for a tag that exists locally.
+`dist/` from `CHANGELOG.md`; no tag is needed.
 
 ## Signing
 

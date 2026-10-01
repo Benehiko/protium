@@ -55,6 +55,13 @@ COSIGN_ISSUER ?= https://token.actions.githubusercontent.com
 # to install it. `notes` fills in the @...@ markers.
 NOTES_TEMPLATE ?= tools/release-notes.md
 
+# The notes for each version, newest first, each under a `## vX.Y.Z` heading.
+# CHANGELOG_SECTION prints one version's notes, without the heading or the
+# blank lines before them. `\#` is make's way to write a `#`.
+CHANGELOG ?= CHANGELOG.md
+CHANGELOG_VERSION = $(firstword $(subst -, ,$(VERSION)))
+CHANGELOG_SECTION = awk -v h='\#\# $(CHANGELOG_VERSION)' '$$0 == h { f = 1; next } f && /^\#\# / { exit } f && !s && !NF { next } f { s = 1; print }' $(CHANGELOG)
+
 # ── make check-release ──────────────────────────────────────────────────
 #
 # Does the shape we publish still build? Installed under its own prefix so
@@ -68,18 +75,22 @@ check-release:
 
 # ── make tag ────────────────────────────────────────────────────────────
 #
-# An annotated tag, locally; `publish` pushes it. An editor opens with a
-# one-line message to extend: the tag message becomes the release notes.
+# An annotated tag, locally; pushing it starts the release. The release notes
+# are this version's section of CHANGELOG.md, written and reviewed like any
+# other change, so the tag carries one line and no editor opens. A version
+# with no notes in CHANGELOG.md is refused.
 tag:
 	@test -n "$(VERSION)" || { echo "make tag: set VERSION, e.g. make tag VERSION=v0.1.0" >&2; exit 1; }
 	@case "$(VERSION)" in v[0-9]*) ;; *) echo "make tag: VERSION must look like v0.1.0, not $(VERSION)" >&2; exit 1;; esac
 	@test -z "$$(git status --porcelain)" || { echo "make tag: the tree is dirty -- commit or stash first" >&2; exit 1; }
 	@! git rev-parse -q --verify "refs/tags/$(VERSION)" >/dev/null || { \
 		echo "make tag: $(VERSION) already exists -- delete it first, or pick another version" >&2; exit 1; }
-	git tag -a "$(VERSION)" -e -m "protium $(VERSION)"
+	@$(CHANGELOG_SECTION) | grep -q '[^[:space:]]' || { \
+		echo "make tag: $(CHANGELOG) has no notes under '## $(CHANGELOG_VERSION)' -- write them first" >&2; exit 1; }
+	git tag -a "$(VERSION)" -m "protium $(VERSION)"
 	@echo
 	@echo "tagged $(VERSION) locally. Not pushed."
-	@echo "next: make release VERSION=$(VERSION)"
+	@echo "next: git push origin $(VERSION)"
 
 # ── make package ────────────────────────────────────────────────────────
 #
@@ -170,13 +181,16 @@ verify:
 
 # ── make notes ──────────────────────────────────────────────────────────
 #
-# The release notes: the annotated tag's message, then the template with this
-# release's version and identity filled in. A lightweight tag contributes its
-# commit's message instead.
+# The release notes: this version's section of CHANGELOG.md, then the template
+# with this release's version and identity filled in. A pre-release such as
+# v0.2.0-rc1 uses v0.2.0's section. No tag is needed, so they can be read
+# before tagging.
 notes:
 	@test -n "$(VERSION)" || { echo "make notes: set VERSION, e.g. make notes VERSION=v0.1.0" >&2; exit 1; }
+	@$(CHANGELOG_SECTION) | grep -q '[^[:space:]]' || { \
+		echo "make notes: $(CHANGELOG) has no notes under '## $(CHANGELOG_VERSION)'" >&2; exit 1; }
 	@mkdir -p $(DIST)
-	git for-each-ref --format='%(contents:subject)%0a%0a%(contents:body)' "refs/tags/$(VERSION)" > $(DIST)/notes.md
+	$(CHANGELOG_SECTION) > $(DIST)/notes.md
 	sed -e 's|@VERSION@|$(VERSION)|g' \
 		-e 's|@COSIGN_IDENTITY@|$(COSIGN_IDENTITY)|g' \
 		-e 's|@COSIGN_ISSUER@|$(COSIGN_ISSUER)|g' \

@@ -86,11 +86,6 @@ protium status            # where the installation is, and the next step
 To build the same Wine on your Mac instead, run `protium doctor` and then
 `protium build` in place of `protium runtime install`.
 
-## Known issues
-
-* Elden Ring ends in a Wine crash report when you quit it from its menu, after
-  the game has already stopped. See `docs/quit-crash.md` in the repository.
-
 The README covers D3DMetal, which comes from Apple, and `protium shell-init`
 prints the line that makes prefixes automatic in every new terminal.
 
