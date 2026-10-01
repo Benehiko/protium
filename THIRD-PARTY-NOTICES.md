@@ -86,6 +86,50 @@ conditions with it.
 `wineboot` at it (`recipe.wine_mono`). Without it, Wine asks in a dialog
 whether to download it. The runtime archive never contains it.
 
+## Libraries Wine builds into its own DLLs
+
+Wine's tree carries the sources of eighteen third-party libraries under `libs/`
+and links them statically into its Windows-side DLLs. Every runtime
+`protium build` produces contains them, so a published runtime does too. The
+evidence: the build directory has a static archive for each one,
+`build-p2/libs/<name>/x86_64-windows/lib<name>.a`, and the build's `Makefile`
+names them as `*_PE_LIBS`. `PE_ARCHS` is `i386 x86_64`, so the 32-bit DLLs are
+built the same way.
+
+| Library | Version, as the tree records it | Licence, per its file in `libs/` | File(s) |
+| --- | --- | --- | --- |
+| Capstone | 5.0 (`CS_API_MAJOR`/`MINOR`), `CS_VERSION_EXTRA` 3 | BSD-style; parts under LLVM's licence | `LICENSE.TXT`, `LICENSE_LLVM.TXT` |
+| compiler-rt | not recorded | University of Illinois/NCSA or MIT, at your choice | `LICENSE.TXT` |
+| FAudio | 25.12.0 | zlib-style ("provided 'as-is'") | `LICENSE` |
+| FluidSynth | 2.4.2 | LGPL-2.1 | `COPYING.md` |
+| GSM | not recorded | permissive, provided the notice is not removed | `COPYRIGHT` |
+| libjpeg (IJG) | 9f, 14-Jan-2024 | IJG licence; a binary distribution must credit the Independent JPEG Group in its documentation | `LICENSE` |
+| jxrlib | not recorded | BSD-style (Microsoft) | `LICENSE` |
+| Little CMS | 2.17 (`LCMS_VERSION` 2170) | MIT | `COPYING` |
+| OpenLDAP | not recorded | OpenLDAP Public License 2.8 | `LICENSE`, `COPYRIGHT` |
+| mpg123 | 1.33.0 | LGPL ("LGPL v2") | `LICENSE` |
+| musl | 1.2.3 | MIT | `COPYRIGHT` |
+| libpng | 1.6.51 | PNG Reference Library License version 2 | `LICENSE` |
+| libtiff | `TIFFLIB_VERSION` 20250911 | libtiff licence: permissive, notices kept | `COPYRIGHT` |
+| LibTomCrypt | 1.18.2 | public domain, or WTFPL, at your choice | `LICENSE` |
+| vkd3d | 1.18 | LGPL-2.1-or-later | `COPYING` |
+| libxml2 | 2.12.10 | MIT | `COPYING` |
+| libxslt | 1.1.43 | MIT-style | `COPYING` |
+| zlib | 1.3.1 | zlib | `LICENSE` |
+
+Read from the CrossOver 26.3.0 tree on 2026-10-01. "Not recorded" means no
+version macro was found in the library's sources there. The files themselves
+govern, not this table.
+
+**A published runtime must carry**, beside Wine's own LGPL obligations:
+
+* each library's licence file(s), copied from `libs/<name>/`;
+* the Independent JPEG Group credit in its documentation;
+* for FluidSynth, mpg123 and vkd3d, which are LGPL, the corresponding source
+  and the means to relink. The CrossOver source tarball the runtime is built
+  from contains `libs/`, and the whole runtime can be rebuilt from it with the
+  recipe, which covers both.
+
 ## Libraries a built runtime carries
 
 `protium build` copies five x86-64 dylibs from `<root>/deps` into the
@@ -168,7 +212,7 @@ listed here for completeness rather than obligation.
 | Tool | Version in the recipe | Licence |
 | --- | --- | --- |
 | GNU Bison | 3.8.2 | GPL-3.0-or-later. Its output carries the Bison parser exception, which is why a GPL tool can generate part of an LGPL Wine. |
-| llvm-mingw | `…-ucrt-macos-universal` release, `mstorsjo/llvm-mingw` | A bundle, not one licence: LLVM/clang/lld are Apache-2.0 WITH LLVM-exception; the mingw-w64 runtime and headers carry their own permissive terms. Consult the `LICENSE*` files inside the unpacked release. |
+| llvm-mingw | `…-ucrt-macos-universal` release, `mstorsjo/llvm-mingw` | A bundle, not one licence: LLVM/clang/lld are Apache-2.0 WITH LLVM-exception; the mingw-w64 runtime and headers carry their own permissive terms. Consult the `LICENSE*` files inside the unpacked release. **Nothing from it is linked into the runtime:** Wine's PE side is built for `x86_64-windows` (`x86_64_TARGET` in the build's `Makefile`), for which `winegcc` links with `-nodefaultlibs -nostdlib` and adds `libgcc` only for mingw and cygwin targets (`tools/winegcc/winegcc.c`). Compiler support routines come from Wine's own `libs/compiler-rt`, above. |
 | FreeType | 2.13.3 | Dual: the FreeType License (BSD-style, requires attribution) or GPL-2.0-or-later, at your choice. Unlike the others here it is also copied into the runtime — see [Libraries a built runtime carries](#libraries-a-built-runtime-carries). |
 | Apple clang / Xcode command line tools | as installed | Apple's, per Xcode's agreement. |
 | Zig | 0.16.0 or newer | MIT. Builds protium itself; not part of the Wine recipe. Its standard library is linked in — see above. |
