@@ -35,7 +35,7 @@ protium runs single-player games. Anti-cheat does not work.
 ### 2. Install protium
 
 ```sh
-V=v0.1.0
+V=v0.2.0
 curl -LO https://github.com/Benehiko/protium/releases/download/$V/protium-$V-macos-aarch64.tar.gz
 tar -xzf protium-$V-macos-aarch64.tar.gz
 mkdir -p ~/.local/bin
