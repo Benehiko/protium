@@ -1406,6 +1406,11 @@ one of the two measures above is in place first.
 
 ## The game moved into the prefix, and then stopped running
 
+> **2026-10-01:** the same `movl $0xdeadba, 0` came back on build 2.7.1.0 with
+> every archive present. That time the cause was the working directory:
+> `protium run` started the game outside its `Game\` directory. See [Where
+> `protium run` starts a program](working-directory.md).
+
 *2026-09-08. Two separate things, recorded together because they happened in
 that order and the first is the obvious suspect for the second. It is not the
 cause; four controlled runs say so.*
