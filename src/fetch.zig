@@ -33,11 +33,72 @@ pub const Report = struct {
 };
 
 pub const Error = error{
-    /// The server answered, but not with the file.
+    /// The server answered, but not with the file, and asking again will not
+    /// change that: a 404, a 403.
     HttpStatus,
+    /// The server answered with a 5xx: it is having trouble, which may pass.
+    HttpServerError,
     /// The URL was not one protium is willing to fetch.
     InsecureUrl,
 };
+
+/// How many times `downloadRetrying` tries before it gives up.
+pub const attempts = 3;
+
+/// Seconds to wait before attempt `next` (2 or 3): a server that just timed
+/// out is given a moment rather than asked again at once.
+pub fn retryDelay(next: usize) i64 {
+    return @as(i64, @intCast(next - 1)) * 5;
+}
+
+/// Whether a failed download is worth trying again.
+///
+/// The network failing, a server timing out or answering 5xx may pass. A URL
+/// protium refuses, a server saying the file is not there, or a disk that is
+/// full or read-only will not, and retrying them only delays the message.
+pub fn isTransient(err: anyerror) bool {
+    return switch (err) {
+        Error.InsecureUrl,
+        Error.HttpStatus,
+        error.OutOfMemory,
+        error.NoSpaceLeft,
+        error.AccessDenied,
+        error.ReadOnlyFileSystem,
+        error.FileNotFound,
+        => false,
+        else => true,
+    };
+}
+
+/// `download`, tried up to `attempts` times while it fails with something
+/// `isTransient`. Each retry is announced on `w` when one is given.
+///
+/// Safe for the build because every archive it fetches is pinned by SHA-256
+/// and checked after the download: a retry cannot let a different file in.
+/// The first `GET` of the 2026-10-01 CI run timed out against ftp.gnu.org,
+/// and one slow answer was failing a twenty-minute build.
+pub fn downloadRetrying(
+    gpa: std.mem.Allocator,
+    io: Io,
+    url: []const u8,
+    dest: []const u8,
+    refresh: bool,
+    w: ?*Io.Writer,
+) !Report {
+    var attempt: usize = 1;
+    while (true) : (attempt += 1) {
+        return download(gpa, io, url, dest, refresh) catch |err| {
+            if (attempt >= attempts or !isTransient(err)) return err;
+            const wait = retryDelay(attempt + 1);
+            if (w) |out| {
+                out.print("  attempt {d} of {d} failed ({s}); trying again in {d}s\n", .{ attempt, attempts, @errorName(err), wait }) catch {};
+                out.flush() catch {};
+            }
+            try io.sleep(.fromSeconds(wait), .awake);
+            continue;
+        };
+    }
+}
 
 /// Fetch `url` into `dest`, unless `dest` is already there and `refresh` is
 /// false. Returns what arrived.
@@ -92,7 +153,7 @@ pub fn download(
         };
         if (res.status != .ok) {
             cwd.deleteFile(io, partial) catch {};
-            return Error.HttpStatus;
+            return if (@intFromEnum(res.status) >= 500) Error.HttpServerError else Error.HttpStatus;
         }
     }
 
@@ -164,6 +225,38 @@ test "a digest prints as the sixty-four characters everyone else prints" {
         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         report.hex(&buf),
     );
+}
+
+test "only a failure that may pass is retried" {
+    // The network and the server's own trouble may pass.
+    try testing.expect(isTransient(error.Timeout));
+    try testing.expect(isTransient(error.ConnectionResetByPeer));
+    try testing.expect(isTransient(Error.HttpServerError));
+    // A refusal, a missing file, or a full disk will not.
+    try testing.expect(!isTransient(Error.InsecureUrl));
+    try testing.expect(!isTransient(Error.HttpStatus));
+    try testing.expect(!isTransient(error.NoSpaceLeft));
+    try testing.expect(!isTransient(error.OutOfMemory));
+
+    // More than one attempt, and each retry waits longer than the last.
+    try testing.expect(attempts >= 2);
+    try testing.expect(retryDelay(2) > 0);
+    try testing.expect(retryDelay(3) > retryDelay(2));
+}
+
+test "a refused URL is not retried" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    // `undefined` Io: a retry would sleep through it and crash, so this
+    // passing is the proof that a permanent failure returns at once.
+    try testing.expectError(Error.InsecureUrl, downloadRetrying(
+        arena_state.allocator(),
+        undefined,
+        "http://example.com/x.exe",
+        "/nowhere/x.exe",
+        false,
+        null,
+    ));
 }
 
 test "a URL that is not HTTPS is refused before anything is opened" {

@@ -2236,7 +2236,7 @@ fn fetchSource(
     try w.print("Fetching {s}\n", .{src.url});
     try w.flush();
 
-    const report = fetch.download(arena, io, src.url, dest, false) catch |err| {
+    const report = fetch.downloadRetrying(arena, io, src.url, dest, false, w) catch |err| {
         try w.print("\nprotium build: the download failed — {s}\n", .{@errorName(err)});
         try w.flush();
         return err;
@@ -2713,7 +2713,7 @@ fn runInstall(
     try w.print("Fetching {s}\n", .{app.url});
     try w.flush();
 
-    const report = fetch.download(arena, io, app.url, dest, opts.refresh) catch |err| {
+    const report = fetch.downloadRetrying(arena, io, app.url, dest, opts.refresh, w) catch |err| {
         try w.print("\nprotium install: the download failed — {s}\n", .{@errorName(err)});
         try w.print("Nothing was installed. The URL is {s}\n", .{app.url});
         return 1;
