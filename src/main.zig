@@ -1654,8 +1654,17 @@ fn runLaunch(
     for (target.flags) |f| try argv.append(arena, f);
     for (opts.positional[1..]) |a| try argv.append(arena, a);
 
+    // A program protium found is started where Steam or Explorer would start
+    // it: in its own directory. See `catalog.programDir`.
+    const cwd: std.process.Child.Cwd = if (!target.resolved)
+        .inherit
+    else if (try catalog.programDir(arena, res.prefix.dir, target.program)) |dir|
+        .{ .path = dir }
+    else
+        .inherit;
+
     try w.flush();
-    return spawnWait(io, vars, argv.items);
+    return spawnAt(io, vars, cwd, argv.items);
 }
 
 const Target = struct {
@@ -1663,6 +1672,11 @@ const Target = struct {
     /// Arguments the catalogue says the program needs here, put before the
     /// person's own.
     flags: []const []const u8 = &.{},
+    /// Whether protium chose `program` from a name, rather than being given
+    /// it. Only a program protium chose is started in its own directory: a
+    /// path typed at a shell keeps that shell's directory, because the rest
+    /// of what was typed may be relative to it.
+    resolved: bool = false,
 };
 
 /// What `protium run <name>` launches. A path, a file that exists here, or
@@ -1701,7 +1715,7 @@ fn launchTarget(
         .app => |app| {
             var flags: std.ArrayList([]const u8) = .empty;
             for (app.launch_args) |a| try flags.append(arena, a.flag);
-            return .{ .program = app.installed, .flags = flags.items };
+            return .{ .program = app.installed, .flags = flags.items, .resolved = true };
         },
         .not_installed => |app| {
             try w.print("protium run: {s} is not installed in the prefix {s}.\n", .{ app.name, res.prefix.name });
@@ -1710,7 +1724,7 @@ fn launchTarget(
         },
         .program => |path| {
             try w.print("protium run: {s} is {s}\n", .{ name, path });
-            return .{ .program = path };
+            return .{ .program = path, .resolved = true };
         },
         .ambiguous => |paths| {
             try w.print("protium run: several programs in the prefix are called {s}:\n", .{name});
@@ -1756,7 +1770,7 @@ fn steamGame(
     switch (try steamapp.choose(arena, game.dir, &.{ game.name, game.installdir }, found.items)) {
         .one => |path| {
             try w.print("protium run: {s} ({s}) is {s}\n", .{ game.name, game.appid, path });
-            return .{ .program = path };
+            return .{ .program = path, .resolved = true };
         },
         .none => {
             try w.print("protium run: {s} ({s}) should be in {s},\n", .{ game.name, game.appid, game.dir });

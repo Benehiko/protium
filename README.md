@@ -113,7 +113,10 @@ protium looks the game up in Steam's records, in every Steam library in the
 prefix, on any drive. It picks the game's program and skips installers,
 bundled runtimes, crash reporters and Easy Anti-Cheat, which does not work
 here. For Elden Ring that is `Game/eldenring.exe`. It also sets `SteamAppId`,
-which a game needs to reach Steam when started directly.
+which a game needs to reach Steam when started directly, and starts the game
+in its own directory, as Steam does. Elden Ring 2.7.1.0 refuses to start from
+anywhere else: see [Where `protium run` starts a
+program](docs/working-directory.md).
 
 The app ID works too (`protium run 1245620`), and so does the executable's
 file name (`protium run eldenring.exe`). Tab completion offers all three. If

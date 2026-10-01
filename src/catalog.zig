@@ -301,6 +301,35 @@ pub fn hostPath(
     return std.fs.path.join(gpa, &.{ prefix_dir, "drive_c", rest });
 }
 
+/// The host directory a program should start in: the one that holds it.
+///
+/// Steam starts a game in its install directory, and Explorer starts a
+/// program in the directory it was opened from, so a Windows program may
+/// find its own files by relative path and only by relative path. Elden Ring
+/// 2.7.1.0 does: started anywhere else, it takes its own fatal path at
+/// start-up (`movl $0xdeadba, 0`), and started in `Game\` it runs
+/// (docs/steam-login.md).
+///
+/// `program` is either a Windows path on `C:` or a host path, the two forms
+/// `protium run` resolves a name to. Anything else (a relative path, another
+/// drive) gives null, and the caller keeps its own working directory.
+pub fn programDir(
+    gpa: std.mem.Allocator,
+    prefix_dir: []const u8,
+    program: []const u8,
+) error{OutOfMemory}!?[]u8 {
+    const host = hostPath(gpa, prefix_dir, program) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.NotOnDriveC => if (std.fs.path.isAbsolutePosix(program))
+            try gpa.dupe(u8, program)
+        else
+            return null,
+    };
+    defer gpa.free(host);
+    const dir = std.fs.path.dirnamePosix(host) orelse return null;
+    return try gpa.dupe(u8, dir);
+}
+
 /// The settings an app needs that the prefix does not already set.
 ///
 /// A value that is already there is left alone even when it differs: the
@@ -427,6 +456,27 @@ test "a Windows path becomes the host path it actually is" {
     try testing.expectError(error.NotOnDriveC, hostPath(a, "/r/p", "C:"));
     try testing.expectError(error.NotOnDriveC, hostPath(a, "/r/p", ""));
     try testing.expectError(error.NotOnDriveC, hostPath(a, "/r/p", "steam.exe"));
+}
+
+test "a program starts in the directory that holds it" {
+    const a = testing.allocator;
+
+    // A catalogue app is named by its Windows path.
+    const steam = (try programDir(a, "/r/p", "C:\\Program Files (x86)\\Steam\\steam.exe")).?;
+    defer a.free(steam);
+    try testing.expectEqualStrings("/r/p/drive_c/Program Files (x86)/Steam", steam);
+
+    // A program found by scanning is already a host path, possibly in a
+    // Steam library outside the prefix.
+    const game = (try programDir(a, "/r/p", "/Volumes/Games/steamapps/common/ELDEN RING/Game/eldenring.exe")).?;
+    defer a.free(game);
+    try testing.expectEqualStrings("/Volumes/Games/steamapps/common/ELDEN RING/Game", game);
+
+    // Anything protium cannot place keeps the caller's directory: a relative
+    // path, a bare name, or a drive protium did not create.
+    try testing.expect((try programDir(a, "/r/p", "setup.exe")) == null);
+    try testing.expect((try programDir(a, "/r/p", "Games/setup.exe")) == null);
+    try testing.expect((try programDir(a, "/r/p", "Z:\\home\\me\\setup.exe")) == null);
 }
 
 test "a need already met is not asked for again" {
