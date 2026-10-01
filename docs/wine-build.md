@@ -184,8 +184,8 @@ configured with `--host=x86_64-apple-darwin --enable-shared --disable-static
 | --- | --- | --- |
 | GMP 6.3.0 | `a3c2b802…538898` | good, key in the GNU keyring |
 | Nettle 3.10 | `b4c518ad…94ee47c` | good, key in the GNU keyring |
-| GnuTLS 3.8.4 | `2bea4e15…ebc3a9b` | good, from Zoltan Fridrich's key (`5D46CB0F…B3F9220C`), which was fetched from keys.openpgp.org by the signature's own fingerprint and **not confirmed independently** |
-| FreeType 2.13.3 | `05503506…c063289` | **not checked**: the signing key `E3067470…63AD8E3F` is not among the keys Savannah publishes for the project's members |
+| GnuTLS 3.8.4 | `2bea4e15…ebc3a9b` | good, from Zoltan Fridrich's key `5D46CB0F…B3F9220C`, checked in an empty keyring holding only the project's own `https://www.gnutls.org/gnutls-release-keyring.gpg` |
+| FreeType 2.13.3 | `05503506…c063289` | good, from Werner Lemberg's key `E3067470…63AD8E3F` (fetched from keyserver.ubuntu.com). That key is not on Savannah, but Arch Linux's `freetype2` 2.13.3-1 `PKGBUILD` names it in `validpgpkeys` for Werner Lemberg and pins the same archive by BLAKE2b (`f9591c69…78b599bd`). No file the archive shares with upstream git tag `VER-2-13-3` differs; the archive adds only generated build files and the `dlg` submodule |
 
 bison 3.8.2 (`9bba0214…ff5a5bf2`) has a good signature from a key in the GNU
 keyring. The CrossOver archive matches the hash recorded above. llvm-mingw
