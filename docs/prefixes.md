@@ -432,6 +432,18 @@ new` fetched the file (85504000 bytes, the pinned hash), and the prefix got
 `drive_c/windows/mono/mono-2.0` in 22 seconds with no dialog. The empty
 `HOME` gained no `.cache`, so the Mono came from protium's copy.
 
+That Mono runs .NET programs, checked the same day in a second fresh root
+with an empty `HOME`:
+
+| Step | Result |
+| --- | --- |
+| Wine Mono's own `mcs.exe`, itself a .NET program, compiles a C# `hello.cs` | `hello.exe`, a `Mono/.Net assembly` |
+| `protium run 'C:\hello\hello.exe'` | prints `hello from .NET 4.0.30319.42000`, loads `C:\windows\mono\mono-2.0\lib\mono\4.5\mscorlib.dll`, and exits with the 42 it returns |
+| The same with `WINEDLLOVERRIDES=mscoree=d` | exits 53 with no output: `0x35`, the low byte of `STATUS_DLL_NOT_FOUND` (`0xC0000135`) |
+
+The `wine-build` workflow's smoke test repeats the compile and the run on a
+clean runner.
+
 Deleting `<root>/cache` is safe; the next `protium prefix new` fetches it
 again. `protium install clean` does not touch it.
 

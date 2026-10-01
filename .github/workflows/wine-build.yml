@@ -129,6 +129,21 @@ jobs:
           WINEDEBUG=-all ./zig-out/bin/protium run --prefix ci cmd /c ver | tee "$RUNNER_TEMP/ver.txt"
           grep -q 'Microsoft Windows' "$RUNNER_TEMP/ver.txt"
 
+          # .NET programs run on that Mono. Wine Mono's own C# compiler is a
+          # .NET program, and what it compiles must exit with the 42 it
+          # returns. Output goes to files, not pipes: a pipe from `protium
+          # run` has been seen to stay open after mcs.exe exited.
+          hello="$PROTIUM_HOME/prefixes/ci/drive_c/hello"
+          mkdir -p "$hello"
+          printf '%s\n' 'class Hello { static int Main() { System.Console.WriteLine("hello from .NET " + System.Environment.Version); return 42; } }' > "$hello/hello.cs"
+          WINEDEBUG=-all ./zig-out/bin/protium run --prefix ci 'C:\windows\mono\mono-2.0\lib\mono\4.5\mcs.exe' '-out:C:\hello\hello.exe' 'C:\hello\hello.cs' > "$RUNNER_TEMP/mcs.txt" 2>&1 \
+            || { cat "$RUNNER_TEMP/mcs.txt"; exit 1; }
+          code=0
+          WINEDEBUG=-all ./zig-out/bin/protium run --prefix ci 'C:\hello\hello.exe' > "$RUNNER_TEMP/hello.txt" 2>&1 || code=$?
+          cat "$RUNNER_TEMP/hello.txt"
+          if [ "$code" -ne 42 ]; then echo "hello.exe exited $code, not 42" >&2; exit 1; fi
+          grep -q 'hello from .NET' "$RUNNER_TEMP/hello.txt"
+
       # What was still running when the smoke test failed or timed out, and
       # what the prefix got as far as.
       - name: smoke test diagnostics
