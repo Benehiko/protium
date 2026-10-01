@@ -11,11 +11,11 @@
 //! on a host with no Wine, no toolchain and no network. `main.zig` carries it
 //! out.
 //!
-//! What is deliberately *not* here is the `deps` prefix — the x86-64 FreeType,
-//! GnuTLS, nettle, hogweed and GMP that Wine links against and `dlopen`s.
-//! Those were built by hand and `docs/wine-build.md` records no configure line
-//! for them, so protium checks for them and says what is missing rather than
-//! running commands nobody has written down. See `deps` below.
+//! The `deps` prefix — the x86-64 FreeType, GnuTLS, nettle, hogweed and GMP
+//! that Wine links against and `dlopen`s — is here too, as `dep_builds`. The
+//! first one was built by hand and nothing recorded how; the configure lines
+//! below are the ones that rebuilt it on 2026-09-30 and matched it. See
+//! docs/wine-build.md#the-deps-prefix.
 
 const std = @import("std");
 
@@ -31,9 +31,12 @@ pub const Source = struct {
     /// The archive as it is saved inside `<root>/build`.
     archive: []const u8,
     url: []const u8,
-    /// The exact version this URL points at, for the record. Nothing in the
-    /// build is pinned to it; it is here so that a build can be quoted.
+    /// The exact version this URL points at, for the record.
     version: []const u8,
+    /// The archive's SHA-256, lower-case hex. A download that does not match
+    /// is refused before anything is unpacked. See the table in
+    /// docs/wine-build.md#toolchain for how each was checked.
+    sha256: []const u8,
     /// One line, printed before the fetch.
     why: []const u8,
 };
@@ -45,6 +48,7 @@ pub const wine_source: Source = .{
     .archive = "crossover-sources-26.3.0.tar.gz",
     .url = "https://media.codeweavers.com/pub/crossover/source/crossover-sources-26.3.0.tar.gz",
     .version = crossover_version,
+    .sha256 = "ac99c8ca4b3848f3e81784135f023df266b61c2345726ea55a50b3e030dd6872",
     .why = "CrossOver's published sources — 142 MB, of which only sources/wine is used",
 };
 
@@ -54,6 +58,7 @@ pub const bison_source: Source = .{
     .archive = "bison-3.8.2.tar.xz",
     .url = "https://ftp.gnu.org/gnu/bison/bison-3.8.2.tar.xz",
     .version = "3.8.2",
+    .sha256 = "9bba0214ccf7f1079c5d59210045227bcf619519840ebfa80cd3849cff5a5bf2",
     .why = "Wine's parser generator; Xcode's is 2.3 and configure refuses it",
 };
 
@@ -64,6 +69,7 @@ pub const mingw_source: Source = .{
     .archive = "llvm-mingw-20260826-ucrt-macos-universal.tar.xz",
     .url = "https://github.com/mstorsjo/llvm-mingw/releases/download/20260826/llvm-mingw-20260826-ucrt-macos-universal.tar.xz",
     .version = "20260826 (clang 23.1.0)",
+    .sha256 = "48bedd161f14ae25a3646cb750b57ee3188e97e34bd3c52240c1810aa74d6a7f",
     .why = "the PE cross-compiler; Apple clang has no mingw driver",
 };
 
@@ -111,12 +117,9 @@ pub const build_subdir = std.fmt.comptimePrint("build-p{d}", .{patches.len});
 
 /// A file that must already be in `<root>/deps` before the build can start.
 ///
-/// protium does not build these. `docs/wine-build.md` says they were "built
-/// shared to a scratch prefix" and records no configure line for any of them,
-/// and a command nobody has written down is not one this program should be
-/// the first to run — the whole point of the project is that the environment
-/// is understood rather than assumed. So the build checks, names what is
-/// missing, and points at the document.
+/// `dep_builds` builds whichever are missing; this list is what the build
+/// then checks for before configuring Wine, because a library build can
+/// finish and still not produce one.
 pub const Dep = struct {
     /// Relative to `<root>/deps`.
     path: []const u8,
@@ -154,6 +157,187 @@ pub const deps = [_]Dep{
         .why = "GnuTLS needs it",
     },
 };
+
+/// One library of the `deps` prefix, built from its published source into it.
+///
+/// These are the commands the 2026-09-30 rebuild ran, one for one, and the
+/// result matched the hand-built prefix the working runtime came from: same
+/// versions, `x86_64`, the same `otool -L`, the same exported symbols, the
+/// same headers. docs/wine-build.md#the-deps-prefix has the comparison.
+pub const DepBuild = struct {
+    name: []const u8,
+    source: Source,
+    /// Relative to `<root>/deps`. All of them present means this library is
+    /// built and is skipped, which is how a prefix built by hand is kept.
+    produces: []const []const u8,
+    /// Passed after `dep_common_args`.
+    configure: []const []const u8,
+    /// Relative to the source tree: a file `configure` writes and the
+    /// archive does not carry, so its presence means configure has run.
+    configured: []const u8 = "config.status",
+    /// Libraries already in the prefix that this configure is told about
+    /// through `<VAR>_CFLAGS` and `<VAR>_LIBS` in the environment. GnuTLS's
+    /// configure does not record these as its own variables (they are not in
+    /// its `ac_precious_vars`), so they cannot go on the command line.
+    links: []const Link = &.{},
+};
+
+pub const Link = struct {
+    /// `GMP` for `GMP_CFLAGS` and `GMP_LIBS`.
+    variable: []const u8,
+    /// `gmp` for `-lgmp`.
+    lib: []const u8,
+};
+
+/// In build order: each one links against the ones before it.
+pub const dep_builds = [_]DepBuild{
+    .{
+        .name = "GMP",
+        .source = .{
+            .archive = "gmp-6.3.0.tar.xz",
+            .url = "https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz",
+            .version = "6.3.0",
+            .sha256 = "a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898",
+            .why = "big-number arithmetic, which Nettle's public-key half needs",
+        },
+        .produces = &.{ "include/gmp.h", "lib/libgmp.10.dylib" },
+        .configure = &.{},
+    },
+    .{
+        .name = "Nettle",
+        .source = .{
+            .archive = "nettle-3.10.tar.gz",
+            .url = "https://ftp.gnu.org/gnu/nettle/nettle-3.10.tar.gz",
+            .version = "3.10",
+            .sha256 = "b4c518adb174e484cb4acea54118f02380c7133771e7e9beb98a0787194ee47c",
+            .why = "the ciphers and hashes GnuTLS is built on (libnettle and libhogweed)",
+        },
+        .produces = &.{ "include/nettle/nettle-meta.h", "lib/libnettle.8.dylib", "lib/libhogweed.6.dylib" },
+        // Its assembly is the "fat" kind, choosing by CPUID at run time, which
+        // is the right thing under Rosetta.
+        .configure = &.{ "--disable-documentation", "--disable-openssl" },
+    },
+    .{
+        .name = "GnuTLS",
+        .source = .{
+            .archive = "gnutls-3.8.4.tar.xz",
+            .url = "https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.4.tar.xz",
+            .version = "3.8.4",
+            .sha256 = "2bea4e154794f3f00180fa2a5c51fe8b005ac7a31cd58bd44cdfa7f36ebc3a9b",
+            .why = "TLS for Wine's schannel; without it no Windows program can open an encrypted socket",
+        },
+        .produces = &.{ "include/gnutls/gnutls.h", "lib/libgnutls.30.dylib" },
+        .configure = &.{
+            // Its own copies, so nothing from Homebrew (arm64, and not ours
+            // to ship) can be picked up.
+            "--with-included-libtasn1",
+            "--with-included-unistring",
+            // Wine needs the library and nothing optional. `--without-zlib`
+            // loses nothing: GnuTLS's zlib support dlopens `libz.so.1`, a
+            // Linux name that never resolves on macOS.
+            "--without-p11-kit",
+            "--without-idn",
+            "--without-brotli",
+            "--without-zstd",
+            "--without-zlib",
+            "--without-tpm",
+            "--without-tpm2",
+            "--disable-nls",
+            "--disable-cxx",
+            "--disable-doc",
+            "--disable-tests",
+            "--disable-tools",
+            "--disable-manpages",
+        },
+        .links = &.{
+            .{ .variable = "GMP", .lib = "gmp" },
+            .{ .variable = "NETTLE", .lib = "nettle" },
+            .{ .variable = "HOGWEED", .lib = "hogweed" },
+        },
+    },
+    .{
+        .name = "FreeType",
+        .source = .{
+            .archive = "freetype-2.13.3.tar.xz",
+            .url = "https://download.savannah.gnu.org/releases/freetype/freetype-2.13.3.tar.xz",
+            .version = "2.13.3",
+            .sha256 = "0550350666d427c74daeb85d5ac7bb353acba5f76956395995311a9c6f063289",
+            .why = "Wine's font rasteriser; without it every Win32 window paints blank",
+        },
+        .produces = &.{ "include/freetype2/ft2build.h", "lib/libfreetype.6.dylib" },
+        // FreeType's archive ships a top-level Makefile and its configure
+        // runs from `builds/unix`, which is where it leaves what it made.
+        .configured = "builds/unix/config.status",
+        // zlib and bzip2 are the system's; the rest are off so that what is
+        // linked does not depend on what else is installed.
+        .configure = &.{
+            "--with-zlib=yes",
+            "--with-bzip2=yes",
+            "--with-png=no",
+            "--with-harfbuzz=no",
+            "--with-brotli=no",
+        },
+    },
+};
+
+/// The arguments every library's `configure` gets. `--host` because the
+/// build machine is arm64 and these are x86-64; Rosetta runs configure's test
+/// programs, so it is not a cross-compile in practice.
+pub const dep_common_args = [_][]const u8{
+    "--host=x86_64-apple-darwin",
+    "--enable-shared",
+    "--disable-static",
+};
+
+pub fn depConfigureArgv(gpa: std.mem.Allocator, deps_dir: []const u8, d: DepBuild) ![]const []const u8 {
+    var argv: std.ArrayList([]const u8) = .empty;
+    try argv.append(gpa, "./configure");
+    try argv.appendSlice(gpa, &dep_common_args);
+    try argv.append(gpa, try std.fmt.allocPrint(gpa, "--prefix={s}", .{deps_dir}));
+    try argv.appendSlice(gpa, d.configure);
+    return argv.toOwnedSlice(gpa);
+}
+
+pub const EnvVar = struct { name: []const u8, value: []const u8 };
+
+/// Variables removed from the inherited environment before a library is
+/// built: each one can point the compiler or pkg-config at a Homebrew
+/// library, which is arm64 and would either fail to link or, worse, be found.
+pub const dep_env_cleared = [_][]const u8{
+    "CPATH",
+    "C_INCLUDE_PATH",
+    "CPLUS_INCLUDE_PATH",
+    "LIBRARY_PATH",
+    "PKG_CONFIG",
+    "PKG_CONFIG_SYSROOT_DIR",
+};
+
+/// What is set on top of the inherited environment to build `d`.
+///
+/// `PATH` is the system's alone, the compiler is Apple's by absolute path,
+/// and pkg-config is confined to the prefix being built.
+pub fn depEnv(gpa: std.mem.Allocator, deps_dir: []const u8, d: DepBuild) ![]const EnvVar {
+    var env: std.ArrayList(EnvVar) = .empty;
+    const include = try std.fmt.allocPrint(gpa, "-I{s}/include", .{deps_dir});
+    try env.appendSlice(gpa, &.{
+        .{ .name = "PATH", .value = "/usr/bin:/bin:/usr/sbin:/sbin" },
+        .{ .name = "CC", .value = "/usr/bin/clang -arch x86_64" },
+        .{ .name = "CXX", .value = "/usr/bin/clang++ -arch x86_64" },
+        .{ .name = "CFLAGS", .value = "-O2" },
+        .{ .name = "CPPFLAGS", .value = include },
+        .{ .name = "LDFLAGS", .value = try std.fmt.allocPrint(gpa, "-L{s}/lib", .{deps_dir}) },
+        .{ .name = "PKG_CONFIG_LIBDIR", .value = try std.fmt.allocPrint(gpa, "{s}/lib/pkgconfig", .{deps_dir}) },
+        .{ .name = "PKG_CONFIG_PATH", .value = "" },
+    });
+    for (d.links) |l| {
+        try env.append(gpa, .{ .name = try std.fmt.allocPrint(gpa, "{s}_CFLAGS", .{l.variable}), .value = include });
+        try env.append(gpa, .{
+            .name = try std.fmt.allocPrint(gpa, "{s}_LIBS", .{l.variable}),
+            .value = try std.fmt.allocPrint(gpa, "-L{s}/lib -l{s}", .{ deps_dir, l.lib }),
+        });
+    }
+    return env.toOwnedSlice(gpa);
+}
 
 /// The dylibs copied into the finished runtime's `lib/`.
 ///
@@ -300,6 +484,113 @@ test "the runtime is named for the Wine, the CrossOver release and the patch lev
     // over it. If a patch is added, this name changes, which is the point.
     try testing.expectEqualStrings("wine-11.0-cx26.3-p2", runtime_name);
     try testing.expectEqualStrings("build-p2", build_subdir);
+}
+
+fn isSha256Hex(s: []const u8) bool {
+    if (s.len != 64) return false;
+    for (s) |c| switch (c) {
+        '0'...'9', 'a'...'f' => {},
+        else => return false,
+    };
+    return true;
+}
+
+test "every source, the libraries' included, is HTTPS and pinned by hash" {
+    var all: [3 + dep_builds.len]Source = undefined;
+    all[0] = wine_source;
+    all[1] = bison_source;
+    all[2] = mingw_source;
+    for (dep_builds, 0..) |d, i| all[3 + i] = d.source;
+    for (all) |s| {
+        try testing.expect(std.mem.startsWith(u8, s.url, "https://"));
+        try testing.expect(std.mem.endsWith(u8, s.url, s.archive));
+        // Lower-case, because that is how the build prints the digest it
+        // computed, and the two are compared as strings.
+        try testing.expect(isSha256Hex(s.sha256));
+        // The tree is found by the archive's stem, so it must have one.
+        try testing.expect(std.mem.indexOf(u8, s.archive, ".tar.") != null);
+    }
+    try testing.expect(!isSha256Hex("AC99c8ca4b3848f3e81784135f023df266b61c2345726ea55a50b3e030dd6872"));
+    try testing.expect(!isSha256Hex("ac99"));
+}
+
+test "every library is built after the ones it links against" {
+    for (dep_builds, 0..) |d, i| {
+        for (d.links) |l| {
+            const want = try std.fmt.allocPrint(testing.allocator, "lib/lib{s}.", .{l.lib});
+            defer testing.allocator.free(want);
+            var earlier = false;
+            for (dep_builds[0..i]) |before| {
+                for (before.produces) |p| {
+                    if (std.mem.startsWith(u8, p, want)) earlier = true;
+                }
+            }
+            try testing.expect(earlier);
+        }
+    }
+}
+
+test "every file the build checks for is one a library build produces" {
+    for (deps) |d| {
+        var made = false;
+        for (dep_builds) |b| {
+            for (b.produces) |p| {
+                if (std.mem.eql(u8, p, d.path)) made = true;
+            }
+        }
+        try testing.expect(made);
+    }
+}
+
+test "a library is configured for x86-64, shared, into the deps prefix" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const gnutls = dep_builds[2];
+    try testing.expectEqualStrings("GnuTLS", gnutls.name);
+    const argv = try depConfigureArgv(a, "/r/deps", gnutls);
+    try testing.expectEqualStrings("./configure", argv[0]);
+    var saw_host = false;
+    var saw_prefix = false;
+    var saw_shared = false;
+    var saw_tasn1 = false;
+    var saw_no_p11 = false;
+    for (argv) |arg| {
+        if (std.mem.eql(u8, arg, "--host=x86_64-apple-darwin")) saw_host = true;
+        if (std.mem.eql(u8, arg, "--prefix=/r/deps")) saw_prefix = true;
+        if (std.mem.eql(u8, arg, "--disable-static")) saw_shared = true;
+        if (std.mem.eql(u8, arg, "--with-included-libtasn1")) saw_tasn1 = true;
+        if (std.mem.eql(u8, arg, "--without-p11-kit")) saw_no_p11 = true;
+    }
+    try testing.expect(saw_host and saw_prefix and saw_shared and saw_tasn1 and saw_no_p11);
+}
+
+test "a library's environment keeps Homebrew out and names what it links" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const env = try depEnv(a, "/r/deps", dep_builds[2]);
+    var saw_path = false;
+    var saw_cc = false;
+    var saw_pkg = false;
+    var saw_gmp = false;
+    for (env) |e| {
+        // No /opt/homebrew or /usr/local anywhere in it.
+        try testing.expect(std.mem.indexOf(u8, e.value, "homebrew") == null);
+        try testing.expect(std.mem.indexOf(u8, e.value, "/usr/local") == null);
+        if (std.mem.eql(u8, e.name, "PATH") and std.mem.eql(u8, e.value, "/usr/bin:/bin:/usr/sbin:/sbin")) saw_path = true;
+        if (std.mem.eql(u8, e.name, "CC") and std.mem.eql(u8, e.value, "/usr/bin/clang -arch x86_64")) saw_cc = true;
+        if (std.mem.eql(u8, e.name, "PKG_CONFIG_LIBDIR") and std.mem.eql(u8, e.value, "/r/deps/lib/pkgconfig")) saw_pkg = true;
+        if (std.mem.eql(u8, e.name, "GMP_LIBS") and std.mem.eql(u8, e.value, "-L/r/deps/lib -lgmp")) saw_gmp = true;
+    }
+    try testing.expect(saw_path and saw_cc and saw_pkg and saw_gmp);
+
+    // A library that links nothing gets no _LIBS variables.
+    for (try depEnv(a, "/r/deps", dep_builds[0])) |e| {
+        try testing.expect(!std.mem.endsWith(u8, e.name, "_LIBS"));
+    }
 }
 
 test "every source is fetched over HTTPS from the publisher" {

@@ -68,7 +68,45 @@ terms; protium's recipe uses none of them, so none is built or installed.
 cask — the LGPL's conditions travel with it: convey the source or a written
 offer for it, keep the copyright and licence notices intact, and preserve the
 recipient's ability to relink. protium's Apache licence does not cover those
-binaries and cannot relax those terms.
+binaries and cannot relax those terms. A runtime `protium build` produces also
+carries five libraries of other people's — see below — and each brings its own
+conditions with it.
+
+## Libraries a built runtime carries
+
+`protium build` copies five x86-64 dylibs from `<root>/deps` into the
+runtime's `lib/` (`recipe.bundled` in `src/recipe.zig`), because Wine
+`dlopen`s FreeType and GnuTLS by bare soname
+([docs/wine-build.md](docs/wine-build.md#installing-it-somewhere-durable)).
+They are not in a protium release. They are in every runtime, so they would be
+in any Wine package built from one.
+
+| Library | Version | Licence (upstream's stated terms) |
+| --- | --- | --- |
+| FreeType | 2.13.3 (`freetype2.pc` reports libtool version 26.2.20) | FreeType License (BSD-style, attribution required) or GPL-2.0-or-later |
+| GnuTLS | 3.8.4 (`gnutls.pc`) | LGPL-2.1-or-later |
+| Nettle (`libnettle`) | 3.10 (`nettle.pc`) | LGPL-3.0-or-later or GPL-2.0-or-later |
+| Nettle (`libhogweed`) | 3.10 (`hogweed.pc`) | LGPL-3.0-or-later or GPL-2.0-or-later |
+| GMP | 6.3.0 (`gmp.pc`) | LGPL-3.0-or-later or GPL-2.0-or-later |
+
+The versions come from the `.pc` files in `~/.local/share/protium/deps/lib/pkgconfig`
+on the machine the runtime was built on (2026-09-30). `lipo -archs` gives `x86_64` for all
+five. `otool -L` shows them linking only to each other and to system
+libraries (`libz`, `libbz2`, `libSystem`, `Security`, `CoreFoundation`). The
+licences are taken from each project's published terms. They were not checked
+against the source trees. `protium build` now builds these from pinned
+archives, keeping the unpacked sources in `<root>/build`
+([docs/wine-build.md](docs/wine-build.md#the-deps-prefix)).
+
+Anyone redistributing a runtime needs, in addition to Wine's conditions:
+
+* FreeType's licence text and attribution;
+* the LGPL-2.1 for GnuTLS, and the corresponding source or a written offer;
+* for Nettle and GMP under their LGPL-3.0 option, the LGPL-3.0 **and** the
+  GPL-3.0 texts (the LGPL-3.0 is a set of additional permissions on top of
+  the GPL-3.0), plus the corresponding source or a written offer;
+* the exact source of each, pinned to what was built, so "corresponding
+  source" means something. `recipe.dep_builds` pins each archive by SHA-256.
 
 ## D3DMetal (Apple Game Porting Toolkit)
 
@@ -117,7 +155,7 @@ listed here for completeness rather than obligation.
 | --- | --- | --- |
 | GNU Bison | 3.8.2 | GPL-3.0-or-later. Its output carries the Bison parser exception, which is why a GPL tool can generate part of an LGPL Wine. |
 | llvm-mingw | `…-ucrt-macos-universal` release, `mstorsjo/llvm-mingw` | A bundle, not one licence: LLVM/clang/lld are Apache-2.0 WITH LLVM-exception; the mingw-w64 runtime and headers carry their own permissive terms. Consult the `LICENSE*` files inside the unpacked release. |
-| FreeType | 2.13.3 | Dual: the FreeType License (BSD-style, requires attribution) or GPL-2.0-or-later, at your choice. |
+| FreeType | 2.13.3 | Dual: the FreeType License (BSD-style, requires attribution) or GPL-2.0-or-later, at your choice. Unlike the others here it is also copied into the runtime — see [Libraries a built runtime carries](#libraries-a-built-runtime-carries). |
 | Apple clang / Xcode command line tools | as installed | Apple's, per Xcode's agreement. |
 | Zig | 0.16.0 or newer | MIT. Builds protium itself; not part of the Wine recipe. Its standard library is linked in — see above. |
 

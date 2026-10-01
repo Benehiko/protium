@@ -1954,6 +1954,8 @@ const host_tools = [_][]const u8{
     "/usr/bin/install_name_tool",
     "/usr/bin/touch",
     "/usr/bin/cmp",
+    // GMP's and Nettle's builds generate assembly with it.
+    "/usr/bin/m4",
 };
 
 /// Build Wine from CodeWeavers' published sources and install it as a runtime.
@@ -1990,7 +1992,6 @@ fn buildWine(
     };
 
     if (try checkHostTools(io, w) != 0) return 1;
-    if (try checkDeps(io, sess, paths, w) != 0) return 1;
 
     try describeBuild(w, paths);
     if (ask) {
@@ -2009,6 +2010,8 @@ fn buildWine(
 
     try Io.Dir.cwd().createDirPath(io, build_root);
 
+    if (try buildDeps(arena, io, vars, sess, paths, w) != 0) return 1;
+    if (try checkDeps(io, sess, paths, w) != 0) return 1;
     if (try buildBison(arena, io, vars, sess, paths, w) != 0) return 1;
     if (try unpackMingw(arena, io, vars, sess, paths, w) != 0) return 1;
     if (try extractWine(arena, io, vars, sess, paths, w) != 0) return 1;
@@ -2031,7 +2034,9 @@ fn describeBuild(w: *Io.Writer, paths: recipe.Paths) !void {
         \\This builds Wine from CodeWeavers' published CrossOver {s} sources and
         \\installs it as the runtime {s}.
         \\
-        \\  fetch     about 260 MB — the sources, llvm-mingw and bison
+        \\  fetch     about 260 MB — the sources, llvm-mingw and bison — and, for
+        \\            whatever {s} lacks, about 14 MB of GMP, Nettle, GnuTLS
+        \\            and FreeType, built there first
         \\  build     six minutes on an M4, downloads included, and the whole
         \\            tree is x86-64
         \\  disk      1.1 GB for the runtime, and about 4 GB for the build tree,
@@ -2039,7 +2044,7 @@ fn describeBuild(w: *Io.Writer, paths: recipe.Paths) !void {
         \\              {s}
         \\  patches   applied to the tree before configure:
         \\
-    , .{ recipe.crossover_version, recipe.runtime_name, paths.build });
+    , .{ recipe.crossover_version, recipe.runtime_name, paths.deps, paths.build });
     for (recipe.patches) |p| {
         try w.print("              {s}\n                {s}\n", .{ p.name, p.why });
     }
@@ -2071,7 +2076,63 @@ fn checkHostTools(io: Io, w: *Io.Writer) !u8 {
     return 1;
 }
 
-/// The x86-64 libraries the build links against, which protium does not build.
+/// Build whatever of the `deps` prefix is missing, from `recipe.dep_builds`.
+///
+/// A library whose files are all there already is left alone, so a prefix
+/// built by hand — as the first one was — is kept rather than rebuilt. Each
+/// one is built with the environment `recipe.depEnv` gives it on top of this
+/// process's, less the variables that could lead the compiler to Homebrew.
+fn buildDeps(
+    arena: std.mem.Allocator,
+    io: Io,
+    vars: *std.process.Environ.Map,
+    sess: session.Session,
+    paths: recipe.Paths,
+    w: *Io.Writer,
+) !u8 {
+    for (recipe.dep_builds) |d| {
+        var have = true;
+        for (d.produces) |p| {
+            if (!sess.exists(try sess.join(&.{ paths.deps, p }))) have = false;
+        }
+        if (have) continue;
+
+        try buildStep(w, "{s} {s} — {s}", .{ d.name, d.source.version, d.source.why });
+        const archive = try fetchSource(arena, io, sess, paths, d.source, w);
+
+        const tree = try sess.join(&.{ paths.build, stem(d.source.archive) });
+        if (!sess.exists(try sess.join(&.{ tree, "configure" }))) {
+            // `-xf`: bsdtar tells .gz from .xz by itself, and Nettle is a .gz.
+            if (try spawnAt(io, vars, .{ .path = paths.build }, &.{ "/usr/bin/tar", "-xf", archive }) != 0) {
+                try w.print("\nprotium build: {s}'s archive did not unpack.\n", .{d.name});
+                return 1;
+            }
+        }
+
+        var dep_env = std.process.Environ.Map.init(arena);
+        for (vars.keys(), vars.values()) |k, v| try dep_env.put(k, v);
+        for (recipe.dep_env_cleared) |k| _ = dep_env.swapRemove(k);
+        for (try recipe.depEnv(arena, paths.deps, d)) |e| try dep_env.put(e.name, e.value);
+
+        const at: std.process.Child.Cwd = .{ .path = tree };
+        if (!sess.exists(try sess.join(&.{ tree, d.configured }))) {
+            const argv = try recipe.depConfigureArgv(arena, paths.deps, d);
+            if (try spawnAt(io, &dep_env, at, argv) != 0) {
+                return buildFailed(w, try std.fmt.allocPrint(arena, "{s}'s configure", .{d.name}));
+            }
+        }
+        if (try spawnAt(io, &dep_env, at, &.{ "/usr/bin/make", try jobs(arena) }) != 0) {
+            return buildFailed(w, d.name);
+        }
+        if (try spawnAt(io, &dep_env, at, &.{ "/usr/bin/make", "install" }) != 0) {
+            return buildFailed(w, try std.fmt.allocPrint(arena, "{s}'s install", .{d.name}));
+        }
+    }
+    return 0;
+}
+
+/// The x86-64 libraries the build links against, checked after `buildDeps`:
+/// every library build can finish and still leave one of these out.
 fn checkDeps(
     io: Io,
     sess: session.Session,
@@ -2091,14 +2152,11 @@ fn checkDeps(
     try w.writeAll(
         \\
         \\These are x86-64 builds of FreeType, GnuTLS, nettle, hogweed and GMP, built
-        \\shared, with the headers beside them. protium does not build them: the
-        \\recipe records that they exist and what they are for, but not the configure
-        \\line that produced them, and a command nobody has written down is not one
-        \\this program should run for the first time in the middle of a build.
+        \\shared, with the headers beside them. protium built what was missing, and
+        \\the builds finished, but these are still not there; the output above is
+        \\where to look. The recipe, and what each library is for:
         \\
-        \\Build them into that directory by hand, then run this again:
-        \\
-        \\  docs/wine-build.md#toolchain
+        \\  docs/wine-build.md#the-deps-prefix
         \\
         \\Without FreeType, Wine has no font rasteriser and every Win32 window paints
         \\blank. Without GnuTLS, it has no TLS at all, and a program with an encrypted
@@ -2124,14 +2182,34 @@ fn fetchSource(
 
     const report = fetch.download(arena, io, src.url, dest, false) catch |err| {
         try w.print("\nprotium build: the download failed — {s}\n", .{@errorName(err)});
+        try w.flush();
         return err;
     };
     var size_buf: [64]u8 = undefined;
     var hex_buf: [64]u8 = undefined;
     try w.print("  {s}{s}\n", .{ dest, if (report.reused) "  (already downloaded)" else "" });
     try w.print("  {s}\n", .{fetch.size(&size_buf, report.bytes)});
-    try w.print("  sha256 {s}\n\n", .{report.hex(&hex_buf)});
+    const got = report.hex(&hex_buf);
+    try w.print("  sha256 {s}\n\n", .{got});
     try w.flush();
+    // Checked before anything is unpacked, and for a reused archive as much
+    // as a fresh one: a file left over from an earlier, different download
+    // is exactly what this is here to catch.
+    if (!std.mem.eql(u8, got, src.sha256)) {
+        try w.print(
+            \\protium build: {s} is not the archive the recipe pins.
+            \\  expected sha256 {s}
+            \\  got             {s}
+            \\
+            \\Nothing was unpacked. Delete {s} and run this again. If the same hash comes
+            \\back, the publisher's file has changed, and the recipe has to be checked
+            \\against it before it is trusted (docs/wine-build.md#toolchain).
+            \\
+        , .{ src.archive, src.sha256, got, dest });
+        // Flushed here: the error unwinds past every caller that would have.
+        try w.flush();
+        return error.ChecksumMismatch;
+    }
     return dest;
 }
 
