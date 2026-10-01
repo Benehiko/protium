@@ -2022,16 +2022,12 @@ fn buildWine(
     try vars.put("PATH", try recipe.buildPath(arena, paths, inherited_path));
     defer if (inherited_path) |p| vars.put("PATH", p) catch {};
 
-    // The oldest macOS the runtime has to load on, for every compile and
-    // link below, and put back afterwards for the same reason as PATH. See
-    // `recipe.macos_min`.
-    const inherited_target = if (vars.get("MACOSX_DEPLOYMENT_TARGET")) |t| try arena.dupe(u8, t) else null;
-    try vars.put("MACOSX_DEPLOYMENT_TARGET", recipe.macos_min);
-    defer if (inherited_target) |t| {
-        vars.put("MACOSX_DEPLOYMENT_TARGET", t) catch {};
-    } else {
-        _ = vars.swapRemove("MACOSX_DEPLOYMENT_TARGET");
-    };
+    // The rest of the build's environment: the oldest macOS the runtime has
+    // to load on, and pkg-config confined to `deps` so that nothing from
+    // Homebrew is linked in. See `recipe.wineEnv`. Put back afterwards for
+    // the same reason as PATH.
+    const saved = try overrideEnv(arena, vars, try recipe.wineEnv(arena, paths), &recipe.dep_env_cleared);
+    defer restoreEnv(vars, saved);
 
     try Io.Dir.cwd().createDirPath(io, build_root);
 
@@ -2049,6 +2045,41 @@ fn buildWine(
 
     try reportBuilt(w, paths);
     return 0;
+}
+
+/// One environment variable as it was before the build changed it: null
+/// when it was not set at all.
+const SavedVar = struct { name: []const u8, value: ?[]const u8 };
+
+/// Set `set` and remove `clear` in `vars`, returning what they were so that
+/// `restoreEnv` can put them back.
+fn overrideEnv(
+    arena: std.mem.Allocator,
+    vars: *std.process.Environ.Map,
+    set: []const recipe.EnvVar,
+    clear: []const []const u8,
+) ![]const SavedVar {
+    var saved: std.ArrayList(SavedVar) = .empty;
+    for (set) |e| {
+        try saved.append(arena, .{ .name = e.name, .value = if (vars.get(e.name)) |v| try arena.dupe(u8, v) else null });
+        try vars.put(e.name, e.value);
+    }
+    for (clear) |name| {
+        const old = vars.get(name) orelse continue;
+        try saved.append(arena, .{ .name = name, .value = try arena.dupe(u8, old) });
+        _ = vars.swapRemove(name);
+    }
+    return saved.items;
+}
+
+fn restoreEnv(vars: *std.process.Environ.Map, saved: []const SavedVar) void {
+    for (saved) |s| {
+        if (s.value) |v| {
+            vars.put(s.name, v) catch {};
+        } else {
+            _ = vars.swapRemove(s.name);
+        }
+    }
 }
 
 /// What the build is about to do, before it does any of it.
