@@ -138,6 +138,20 @@ pub const runtime_name = std.fmt.comptimePrint(
 
 pub const build_subdir = std.fmt.comptimePrint("build-p{d}", .{patches.len});
 
+/// The repository whose releases carry protium and the runtime built with it.
+pub const release_repo = "Benehiko/protium";
+
+/// The runtime archive a release publishes: the installed runtime directory,
+/// `runtime_name/`, as one gzipped tar. The `wine-build` workflow names its
+/// archive the same way.
+pub const runtime_archive = runtime_name ++ "-macos-x86_64.tar.gz";
+
+/// Where the release of protium `version` (without its `v`) publishes the
+/// runtime archive.
+pub fn runtimeUrl(gpa: std.mem.Allocator, version: []const u8) ![]u8 {
+    return std.fmt.allocPrint(gpa, "https://github.com/{s}/releases/download/v{s}/{s}", .{ release_repo, version, runtime_archive });
+}
+
 /// A file that must already be in `<root>/deps` before the build can start.
 ///
 /// `dep_builds` builds whichever are missing; this list is what the build
@@ -542,7 +556,9 @@ test "the runtime is named for the Wine, the CrossOver release and the patch lev
     try testing.expectEqualStrings("build-p2", build_subdir);
 }
 
-fn isSha256Hex(s: []const u8) bool {
+/// Whether `s` is a SHA-256 written as 64 lower-case hex characters, which is
+/// how every digest here is pinned and how protium prints the one it computed.
+pub fn isSha256Hex(s: []const u8) bool {
     if (s.len != 64) return false;
     for (s) |c| switch (c) {
         '0'...'9', 'a'...'f' => {},
@@ -577,6 +593,19 @@ test "Wine Mono is the file this Wine asks for, over HTTPS, pinned" {
     try testing.expect(std.mem.startsWith(u8, wine_mono.url, "https://"));
     try testing.expect(std.mem.endsWith(u8, wine_mono.url, wine_mono.archive));
     try testing.expect(isSha256Hex(wine_mono.sha256));
+}
+
+test "a release publishes the runtime under its own tag" {
+    const a = testing.allocator;
+    const url = try runtimeUrl(a, "0.2.0");
+    defer a.free(url);
+    try testing.expectEqualStrings(
+        "https://github.com/Benehiko/protium/releases/download/v0.2.0/wine-11.0-cx26.3-p2-macos-x86_64.tar.gz",
+        url,
+    );
+    // The archive unpacks to the runtime's own directory name, which is what
+    // `runtime install` looks for inside it.
+    try testing.expect(std.mem.startsWith(u8, runtime_archive, runtime_name ++ "-"));
 }
 
 test "every library is built after the ones it links against" {

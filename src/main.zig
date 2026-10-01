@@ -39,6 +39,14 @@ const webhelper_shim = @embedFile("webhelper_shim");
 /// Set by `-Dversion=` (see build.zig); "dev" for a plain `zig build`.
 const protium_version = @import("build_options").version;
 
+/// The SHA-256 of the runtime archive this binary's release publishes; empty
+/// in a development build. See `-Druntime_sha256` in build.zig.
+const runtime_sha256 = @import("build_options").runtime_sha256;
+comptime {
+    if (runtime_sha256.len != 0 and !recipe.isSha256Hex(runtime_sha256))
+        @compileError("-Druntime_sha256 must be 64 lower-case hex characters");
+}
+
 /// Rosetta 2's runtime lives here when it is installed, and nowhere else.
 const rosetta_marker = "/Library/Apple/usr/libexec/oah";
 
@@ -48,6 +56,9 @@ const usage =
     \\Setting up:
     \\  protium doctor              Check this host against what building Wine needs.
     \\  protium build               Build Wine from CodeWeavers' sources and install it.
+    \\  protium runtime install [<archive>]
+    \\                              Or install the Wine this release was built with,
+    \\                              downloaded, or from an archive already here.
     \\  protium status              Where the installation is, and the next step.
     \\  protium shell-init          Print the line that makes prefixes automatic.
     \\  protium completion <shell>  Print tab-completion for bash, zsh or fish.
@@ -93,8 +104,9 @@ const usage =
     \\  --refresh         install: download again rather than reusing the copy.
     \\  --undo            install: put back the program's own file protium replaced.
     \\
-    \\Neither half of the environment is shipped here: the Wine is built from
-    \\CodeWeavers' published sources (docs/wine-build.md) and D3DMetal comes
+    \\The Wine is built from CodeWeavers' published sources, on this Mac by
+    \\`protium build` (docs/wine-build.md) or by this release's own workflow
+    \\for `protium runtime install`. D3DMetal is never shipped here: it comes
     \\from Apple's Game Porting Toolkit (docs/d3dmetal.md).
     \\
 ;
@@ -131,6 +143,7 @@ fn dispatch(
 ) !u8 {
     if (std.mem.eql(u8, cmd, "doctor")) return runDoctor(io, vars, w);
     if (std.mem.eql(u8, cmd, "build")) return runBuild(arena, io, vars, rest, w);
+    if (std.mem.eql(u8, cmd, "runtime")) return runRuntime(arena, io, vars, rest, w);
     if (std.mem.eql(u8, cmd, "redist")) return runRedist(gpa, io, rest, w);
     if (std.mem.eql(u8, cmd, "status")) return runStatus(arena, io, vars, rest, w);
     if (std.mem.eql(u8, cmd, "env")) return runEnv(arena, io, vars, rest, w);
@@ -2014,6 +2027,164 @@ fn runBuild(
         else => |e| return e,
     };
     return buildWine(arena, io, vars, sess, w, false);
+}
+
+/// `protium runtime install [<archive>]`: install the runtime this release
+/// publishes, instead of building one.
+fn runRuntime(
+    arena: std.mem.Allocator,
+    io: Io,
+    vars: *std.process.Environ.Map,
+    args: []const []const u8,
+    w: *Io.Writer,
+) !u8 {
+    if (args.len == 0 or !std.mem.eql(u8, args[0], "install")) {
+        try w.writeAll("protium runtime: the subcommand is install — `protium runtime install [<archive>]`\n");
+        return 2;
+    }
+    const opts = try parseOptions(arena, args[1..], false);
+    if (opts.bad) |b| return reportBadOption(w, "runtime install", b);
+    if (opts.positional.len > 1) {
+        try w.writeAll("protium runtime install: give at most one archive\n");
+        return 2;
+    }
+
+    const sess = session.Session.open(arena, io, vars) catch |err| switch (err) {
+        error.NoHome => {
+            try w.writeAll("protium: no HOME, and no PROTIUM_HOME to use instead\n");
+            return 1;
+        },
+        else => |e| return e,
+    };
+    const local: ?[]const u8 = if (opts.positional.len == 1) opts.positional[0] else null;
+    return installRuntime(arena, io, vars, sess, local, w);
+}
+
+/// Install the runtime archive this binary's release publishes, from the
+/// release or from `local`, and only if its SHA-256 is the one compiled in.
+///
+/// The hash is the whole of the trust: the binary is what the release's
+/// cosign signature covers, so a runtime matching the hash it carries is the
+/// one the release workflow built. Downloading here, rather than in a browser,
+/// also means macOS never quarantines the hundreds of unsigned libraries in it.
+fn installRuntime(
+    arena: std.mem.Allocator,
+    io: Io,
+    vars: *std.process.Environ.Map,
+    sess: session.Session,
+    local: ?[]const u8,
+    w: *Io.Writer,
+) !u8 {
+    if (runtime_sha256.len == 0) {
+        try w.writeAll(
+            \\protium runtime install: this protium carries no hash of a published runtime,
+            \\so it has nothing to check one against. That is the case for a development
+            \\build. Build Wine from source instead:
+            \\
+            \\  protium build
+            \\
+        );
+        return 1;
+    }
+    if (!layout.rootIsUsable(sess.root)) {
+        try w.print("protium: {s} contains a space, which Wine's own tooling cannot handle.\n", .{sess.root});
+        try w.writeAll("Set PROTIUM_HOME to a path without one.\n");
+        return 1;
+    }
+
+    const name = recipe.runtime_name;
+    const runtimes_dir = try sess.join(&.{ sess.root, layout.runtimes });
+    const target = try sess.join(&.{ runtimes_dir, name });
+    if (sess.exists(target)) {
+        try w.print("protium runtime install: {s} is installed already, in {s}\n", .{ name, target });
+        try w.writeAll(
+            \\It is left alone: it may carry D3DMetal, which the published runtime does not.
+            \\Remove it first to install the published one in its place.
+            \\
+        );
+        return 1;
+    }
+    const staging = try sess.join(&.{ runtimes_dir, ".staging-" ++ name });
+    if (sess.exists(staging)) {
+        try w.print("protium runtime install: {s} is left from an install that was interrupted.\n", .{staging});
+        try w.writeAll("Delete it and run this again.\n");
+        return 1;
+    }
+    if (!exists(io, "/usr/bin/tar")) {
+        try w.writeAll("protium runtime install: /usr/bin/tar is missing. It comes with macOS.\n");
+        return 1;
+    }
+
+    var archive: []const u8 = undefined;
+    var fetched = false;
+    if (local) |path| {
+        archive = path;
+    } else {
+        const url = try recipe.runtimeUrl(arena, protium_version);
+        const dir = try sess.join(&.{ sess.root, layout.downloads });
+        try Io.Dir.cwd().createDirPath(io, dir);
+        archive = try sess.join(&.{ dir, recipe.runtime_archive });
+        try w.print("Fetching {s}\n", .{url});
+        try w.flush();
+        _ = fetch.downloadRetrying(arena, io, url, archive, false, w) catch |err| {
+            try w.print("\nprotium runtime install: the download failed — {s}\n", .{@errorName(err)});
+            return 1;
+        };
+        fetched = true;
+    }
+
+    const digest = fetch.digestOf(io, archive) catch |err| {
+        try w.print("protium runtime install: cannot read {s} — {s}\n", .{ archive, @errorName(err) });
+        return 1;
+    };
+    var hex_buf: [64]u8 = undefined;
+    const got = std.fmt.bufPrint(&hex_buf, "{x}", .{&digest}) catch unreachable;
+    if (!std.mem.eql(u8, got, runtime_sha256)) {
+        try w.print(
+            \\protium runtime install: {s} is not the runtime this protium was released with.
+            \\  expected sha256 {s}
+            \\  got             {s}
+            \\
+        , .{ archive, runtime_sha256, got });
+        if (fetched) {
+            Io.Dir.cwd().deleteFile(io, archive) catch {};
+            try w.writeAll("The download was deleted. Nothing was installed.\n");
+        } else {
+            try w.writeAll("Nothing was installed.\n");
+        }
+        return 1;
+    }
+    try w.print("  sha256 {s}, the runtime this protium was released with\n\n", .{got});
+
+    // Unpacked beside its destination and renamed into place, so that an
+    // interrupted install never leaves a half-written runtime under its real
+    // name for `run` to pick.
+    try Io.Dir.cwd().createDirPath(io, staging);
+    try w.print("Unpacking into {s}\n", .{target});
+    try w.flush();
+    if (try spawnAt(io, vars, .inherit, &.{ "/usr/bin/tar", "-xzf", archive, "-C", staging }) != 0) {
+        try w.print("\nprotium runtime install: the archive did not unpack. {s} is left to inspect.\n", .{staging});
+        return 1;
+    }
+    const unpacked = try sess.join(&.{ staging, name });
+    if (!sess.exists(try sess.join(&.{ unpacked, layout.wine_loader }))) {
+        try w.print("\nprotium runtime install: the archive holds no {s}/{s}. {s} is left to inspect.\n", .{ name, layout.wine_loader, staging });
+        return 1;
+    }
+    try Io.Dir.cwd().rename(unpacked, Io.Dir.cwd(), target, io);
+    Io.Dir.cwd().deleteDir(io, staging) catch {};
+
+    try w.print("\nThe runtime {s} is installed, in {s}\n", .{ name, target });
+    try w.writeAll(
+        \\
+        \\It has no D3DMetal, so it runs Windows programs but not Direct3D games.
+        \\Apple's half comes from the Game Porting Toolkit DMG (docs/d3dmetal.md), and
+        \\this installs it:
+        \\
+        \\
+    );
+    try w.print("  protium redist \"/Volumes/.../redist/lib\" --into {s}/{s}\n", .{ target, layout.lib_dir });
+    return 0;
 }
 
 /// The programs the build shells out to. All of them come with Xcode's command

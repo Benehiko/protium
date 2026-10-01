@@ -169,7 +169,7 @@ fn sizeOf(io: Io, path: []const u8) !u64 {
 /// The SHA-256 of a file, read in chunks rather than into memory: an installer
 /// that fetches the rest of itself is small, but Epic's is not, and a
 /// catalogue entry added later might be larger still.
-fn digestOf(io: Io, path: []const u8) ![Sha256.digest_length]u8 {
+pub fn digestOf(io: Io, path: []const u8) ![Sha256.digest_length]u8 {
     var file = try Io.Dir.cwd().openFile(io, path, .{});
     defer file.close(io);
 
