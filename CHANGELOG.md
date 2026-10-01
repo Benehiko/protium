@@ -31,6 +31,14 @@ The first release that carries Wine itself.
   pins. .NET programs run in a new prefix.
 * **`protium run` finds Steam games** in every Steam library, deeper, and by
   title, and sets `SteamAppId` from Steam's manifest.
+* **`protium d3dmetal install` replaces `protium redist`.** It takes Apple's
+  Game Porting Toolkit `.dmg`, the evaluation environment in it, either one
+  mounted, or its `redist/lib` folder, and with no path uses the
+  `Game_Porting_Toolkit_*.dmg` in `~/Downloads`. It checks Apple's payload and
+  merges it into the runtime, keeping Wine's own Direct3D modules aside, so
+  there is no longer a second, destructive install method to choose between.
+  `protium d3dmetal check` reports the runtime's D3DMetal, or what Apple's
+  download holds. `protium redist` is gone.
 
 ### Fixed
 
