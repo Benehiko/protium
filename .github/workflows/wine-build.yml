@@ -86,14 +86,10 @@ jobs:
           done
           [ "$(lipo -archs "$rt/bin/wine")" = "x86_64" ]
 
-      # The runtime boots a prefix and runs a Windows program. No D3DMetal:
-      # that is Apple's, and is never part of this.
-      - name: smoke test
-        run: |
-          ./zig-out/bin/protium prefix new ci --force
-          WINEDEBUG=-all ./zig-out/bin/protium run --prefix ci cmd /c ver | tee "$RUNNER_TEMP/ver.txt"
-          grep -q 'Microsoft Windows' "$RUNNER_TEMP/ver.txt"
-
+      # Packaged and uploaded before the smoke test, so that a runtime that
+      # built and passed its checks can be downloaded and tried on a real Mac
+      # even when the runner cannot boot it. That is how a failure of the
+      # runtime is told apart from a failure of the runner.
       - name: package
         run: tar -C "$PROTIUM_HOME/runtimes" -czf "$RUNNER_TEMP/$RUNTIME-macos-x86_64.tar.gz" "$RUNTIME"
 
@@ -104,3 +100,30 @@ jobs:
           compression-level: 0
           retention-days: 7
           if-no-files-found: error
+
+      # The runtime boots a prefix and runs a Windows program. No D3DMetal:
+      # that is Apple's, and is never part of this.
+      #
+      # Bounded: on 2026-10-01 `prefix new` hung on the runner after Wine's
+      # `run_wineboot boot event wait timed out`, and held the job for forty
+      # minutes until it was cancelled. Locally the same step takes seconds.
+      - name: smoke test
+        timeout-minutes: 10
+        run: |
+          ./zig-out/bin/protium prefix new ci --force
+          WINEDEBUG=-all ./zig-out/bin/protium run --prefix ci cmd /c ver | tee "$RUNNER_TEMP/ver.txt"
+          grep -q 'Microsoft Windows' "$RUNNER_TEMP/ver.txt"
+
+      # What was still running when the smoke test failed or timed out, and
+      # what the prefix got as far as.
+      - name: smoke test diagnostics
+        if: failure()
+        run: |
+          echo "== Wine processes"
+          ps -axo pid,ppid,etime,stat,command | grep -i -E 'wine|\.exe' | grep -v grep || true
+          echo "== the prefix"
+          ls -la "$PROTIUM_HOME/prefixes/ci" 2>&1 || true
+          ls "$PROTIUM_HOME/prefixes/ci/drive_c/windows" 2>&1 | head -20 || true
+          echo "== session"
+          who || true
+          launchctl managername 2>&1 || true
