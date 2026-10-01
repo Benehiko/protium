@@ -28,6 +28,14 @@ permissions:
 
 jobs:
   build:
+    # A newer push to a pull request supersedes the build still running for
+    # it. The paths filter compares the whole pull request with its base, so
+    # every push to one that touches the runtime starts a build. Only pull
+    # request builds are cancelled: a build for a release, or one started by
+    # hand, has a group of its own and always finishes.
+    concurrency:
+      group: wine-build-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     # Apple silicon. protium refuses an Intel Mac (src/doctor.zig).
     runs-on: macos-15
     timeout-minutes: 180
