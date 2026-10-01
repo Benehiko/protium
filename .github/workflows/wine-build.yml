@@ -107,8 +107,18 @@ jobs:
       # Bounded: on 2026-10-01 `prefix new` hung on the runner after Wine's
       # `run_wineboot boot event wait timed out`, and held the job for forty
       # minutes until it was cancelled. Locally the same step takes seconds.
+      #
+      # Why it hung, from the diagnostics step's process list: `wineboot
+      # --init` had started `control.exe appwiz.cpl install_mono`, Wine's
+      # "download Wine Mono?" dialog, and was waiting for an answer nobody on a
+      # runner gives. A Mac that has answered it once keeps the installer in
+      # ~/.cache/wine and never sees the dialog again, which is why the step
+      # never hung locally. Disabling mscoree and mshtml skips the Mono and
+      # Gecko installers; `cmd /c ver` needs neither.
       - name: smoke test
         timeout-minutes: 10
+        env:
+          WINEDLLOVERRIDES: mscoree,mshtml=
         run: |
           ./zig-out/bin/protium prefix new ci --force
           WINEDEBUG=-all ./zig-out/bin/protium run --prefix ci cmd /c ver | tee "$RUNNER_TEMP/ver.txt"
