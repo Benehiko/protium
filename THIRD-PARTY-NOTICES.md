@@ -34,7 +34,7 @@ What protium does with the rest, instead of shipping it:
   sources *you* download. protium never links Wine; it executes `wine` as a
   separate process.
 * **D3DMetal** — copies a payload *you* obtained from Apple into a Wine tree,
-  after checking its shape (`src/redist.zig`). It never contains a copy.
+  after checking its shape (`src/d3dmetal.zig`). It never contains a copy.
 
 So no third-party licence imposes conditions on protium's own source, and
 protium is not a combined or derivative work of Wine or D3DMetal: the patches
@@ -178,7 +178,7 @@ Anyone redistributing a runtime needs, in addition to Wine's conditions:
 | **Copyright** | Apple Inc. |
 
 **protium ships no part of this and neither should anything built from this
-repository.** `protium redist` reads a copy you downloaded under your own
+repository.** `protium d3dmetal install` reads a copy you downloaded under your own
 acceptance of Apple's terms and installs it into your own Wine tree. Apple's
 agreement governs what you may then do with it — in particular whether you may
 pass it on, which is a question for that agreement and not for this file.
@@ -186,7 +186,7 @@ pass it on, which is a question for that agreement and not for this file.
 The payload and its structure are recorded in
 [docs/d3dmetal.md](docs/d3dmetal.md#the-download-contains-no-wine): a
 framework, one shared library, and six PE shims each paired with a unix-side
-symlink. `src/redist.zig` verifies that shape rather than a fixed file list,
+symlink. `src/d3dmetal.zig` verifies that shape rather than a fixed file list,
 because the list changes between releases.
 
 ## Zig standard library

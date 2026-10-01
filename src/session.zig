@@ -11,7 +11,7 @@ const Io = std.Io;
 
 const layout = @import("layout.zig");
 const env = @import("env.zig");
-const redist = @import("redist.zig");
+const d3dmetal = @import("d3dmetal.zig");
 const plist = @import("plist.zig");
 const status = @import("status.zig");
 
@@ -173,12 +173,12 @@ pub const Session = struct {
     /// null when the runtime has no D3DMetal in it.
     pub fn d3dmetalVersion(s: Session, rt: Resolved) ?[]const u8 {
         const lib = s.join(&.{ rt.dir, layout.lib_dir }) catch return null;
-        if (!s.exists(std.fs.path.join(s.arena, &.{ lib, redist.shared_library }) catch return null)) {
+        if (!s.exists(std.fs.path.join(s.arena, &.{ lib, d3dmetal.shared_library }) catch return null)) {
             return null;
         }
         var dir = Io.Dir.cwd().openDir(s.io, lib, .{}) catch return null;
         defer dir.close(s.io);
-        const xml = dir.readFileAlloc(s.io, redist.framework_plist, s.arena, .limited(1 << 20)) catch return null;
+        const xml = dir.readFileAlloc(s.io, d3dmetal.framework_plist, s.arena, .limited(1 << 20)) catch return null;
         return plist.stringValue(xml, "CFBundleShortVersionString") orelse "unknown";
     }
 

@@ -50,7 +50,7 @@ pub const Step = enum {
         return switch (s) {
             .move_root => null,
             .install_wine => "protium build",
-            .install_d3dmetal => "protium redist <apple-redist-lib> --into <runtime>/lib",
+            .install_d3dmetal => "protium d3dmetal install",
             .choose_runtime => "protium use --runtime <name>",
             .create_prefix => "protium prefix new default",
             .boot_prefix => "protium prefix new <name>",

@@ -83,9 +83,11 @@ Anything that hooks or inspects the D3D12 shim — an overlay, a frame capture,
 a mod runtime — is pinned to a version whether it knows it or not. Record which
 one an observation was made against.
 
-Installing it is one of two procedures, and using the wrong one destroys the
-Wine. `protium redist <dir> --into <dest>` picks between them by looking for
-`wine/x86_64-windows/ntdll.dll` in the destination.
+`protium d3dmetal install` always merges Apple's payload into a protium
+runtime, after checking that the runtime is a Wine (it has
+`wine/x86_64-windows/ntdll.dll`) and moving Wine's own copies of the shims'
+modules aside. The two procedures below are what it replaces; installing by
+hand is one of them, and using the wrong one destroys the Wine.
 
 **Into a directory holding only the payload** — CrossOver's `lib64/apple_gptk`,
 or the `lib` of Gcenx's app bundle — Apple's own procedure applies, and the
