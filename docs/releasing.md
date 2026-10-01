@@ -58,7 +58,9 @@ each file above, and why each is there.
       will (`make sign`);
    4. writes the notes (`make notes`): the tag message, then
       `tools/release-notes.md` with the version and identity filled in;
-   5. creates the GitHub release with the archive, `SHA256SUMS` and the bundle.
+   5. creates the GitHub release with every archive, `SHA256SUMS` and the
+      bundle. A tag with a hyphen, such as `v0.2.0-rc1`, becomes a
+      pre-release: published, but never marked as the latest release.
 
 4. Watch the run under the repository's Actions tab, then open the release
    and read its notes.
