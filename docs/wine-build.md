@@ -24,9 +24,11 @@ That command is this document, carried out: it fetches CrossOver's sources,
 bison and llvm-mingw into `<root>/build`, applies the patches, adds
 `SONAME_LIBVULKAN`, configures, builds, installs the result as the runtime
 `wine-11.0-cx26.3-p2`, and copies FreeType and GnuTLS into it with their
-install names rewritten. `protium prefix new` offers it when there is no
-runtime to boot a prefix with — it prints what it is about to do and waits for
-an answer, because a ten-minute build is not what `prefix new` reads like.
+install names rewritten. When there is no runtime to boot a prefix with, a
+development build of `protium prefix new` offers it. A released protium offers
+`protium runtime install` instead, which installs the runtime it was released
+with in seconds. Either way it prints what it is about to do and waits for an
+answer, because neither a download nor a build is what `prefix new` reads like.
 `--force` answers the question in advance.
 
 It builds the `deps` prefix only where it is missing: a library whose files

@@ -96,7 +96,8 @@ const usage =
     \\  --runtime <name>  Use this Wine instead of the default.
     \\  --shell <name>    fish, zsh, bash or posix. Defaults to $SHELL.
     \\  --force           install: run the installer even if it is already there.
-    \\                    prefix new: answer the offer to build Wine with yes.
+    \\                    prefix new: answer the offer to install or build Wine
+    \\                    with yes.
     \\                    prefix stop: skip the polite request and signal at once.
     \\                    prefix remove, install clean: delete without asking
     \\                    first. It never deletes anything the question would
@@ -690,10 +691,12 @@ fn prefixNew(
     // and say so plainly rather than failing inside wineboot.
     //
     // With no runtime installed at all, the honest answer is not a complaint:
-    // it is the build, offered here rather than left as a document to go away
-    // and read. It is offered rather than started, because it fetches 260 MB
-    // and runs for six minutes, and `prefix new` does not read like a command
-    // that does either.
+    // it is a runtime, offered here rather than left as a document to go away
+    // and read. A release build offers the runtime it was released with, which
+    // downloads in seconds. A development build has none to offer, so it
+    // offers the build, which fetches 260 MB and runs for six minutes. Either
+    // is offered rather than started, because `prefix new` does not read like
+    // a command that downloads or builds.
     const rt = sess.runtime(opts.runtime) catch |err| blk: {
         if (err != error.None or opts.runtime != null) {
             try reportUnresolved(sess, w, layout.runtimes, "runtime", opts.runtime, err);
@@ -703,7 +706,11 @@ fn prefixNew(
             "There is no Wine under {s}/{s}, and a prefix cannot be created without one.\n\n",
             .{ sess.root, layout.runtimes },
         );
-        if (try buildWine(arena, io, vars, sess, w, !opts.force) != 0) return 1;
+        if (runtime_sha256.len != 0) {
+            if (try offerRuntimeInstall(arena, io, vars, sess, w, !opts.force) != 0) return 1;
+        } else {
+            if (try buildWine(arena, io, vars, sess, w, !opts.force) != 0) return 1;
+        }
         break :blk sess.runtime(opts.runtime) catch |again| {
             try reportUnresolved(sess, w, layout.runtimes, "runtime", opts.runtime, again);
             return 1;
@@ -2058,6 +2065,34 @@ fn runRuntime(
     };
     const local: ?[]const u8 = if (opts.positional.len == 1) opts.positional[0] else null;
     return installRuntime(arena, io, vars, sess, local, w);
+}
+
+/// What `prefix new` offers when no runtime is installed and this protium was
+/// released with one: that runtime, which installs in seconds, rather than
+/// the build. `ask` puts the question first; `--force` answers it.
+fn offerRuntimeInstall(
+    arena: std.mem.Allocator,
+    io: Io,
+    vars: *std.process.Environ.Map,
+    sess: session.Session,
+    w: *Io.Writer,
+    ask: bool,
+) !u8 {
+    try w.print(
+        \\This protium was released with a Wine runtime, {s}. It is downloaded from
+        \\the release, about 330 MB, and installed only if its SHA-256 matches the one
+        \\compiled into protium. To build the same Wine on this Mac instead, run
+        \\`protium build`.
+        \\
+        \\
+    , .{recipe.runtime_name});
+    if (ask) {
+        if (!try confirm(io, w, "Install it now?", "Pass --force to install without the question, or run `protium runtime install`.")) {
+            try w.writeAll("\nNothing was downloaded. `protium runtime install` does it whenever you like.\n");
+            return 1;
+        }
+    }
+    return installRuntime(arena, io, vars, sess, null, w);
 }
 
 /// Install the runtime archive this binary's release publishes, from the
