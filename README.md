@@ -128,6 +128,11 @@ the one you want by its file name or path.
 > online mode.` and the menu reads `OFFLINE`. This is expected. `CONTINUE`
 > loads your save.
 
+> [!NOTE]
+> Quitting the game from its menu ends in a Wine crash report instead of a
+> clean exit. The game has already stopped by then. This is a known issue; see
+> [Elden Ring crashes when it quits](docs/quit-crash.md).
+
 If the game exits at once with `connect to global user failed`, Steam is not
 signed in. See [Steam sign-in](#steam-sign-in).
 
