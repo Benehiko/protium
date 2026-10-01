@@ -55,7 +55,7 @@ also explain how to clear it.
 
 ```sh
 protium doctor               # check the prerequisites
-protium build                # build Wine; about 10 minutes, unattended
+protium runtime install      # install the Wine this release was built with
 protium redist "/Volumes/…/redist/lib" --into ~/.local/share/protium/runtimes/<name>/lib
 protium prefix new default   # create a Windows prefix
 protium shell-init           # print a line to add to your shell's rc file
@@ -68,10 +68,17 @@ Run `protium status` at any point to see where you are and what comes next.
 > just built**. protium inspects the destination and prints the right one.
 > Read it before you run it.
 
-`protium build` follows [docs/wine-build.md](docs/wine-build.md). It does not
-build the x86-64 FreeType and GnuTLS that Wine needs. It checks for them and
-names what is missing. The document explains each step and the three mistakes
-that each cost an hour to find.
+`protium runtime install` downloads the Wine runtime that this release of
+protium was built with, and installs it only if its SHA-256 matches the one
+compiled into protium, which the release's signature covers. Because protium
+downloads it rather than a browser, macOS does not quarantine it. To build the
+same Wine on your Mac instead, run `protium build` in its place: it is
+unattended, and takes about 10 minutes on an M4.
+
+`protium build` follows [docs/wine-build.md](docs/wine-build.md). It builds the
+x86-64 FreeType, GnuTLS and the libraries GnuTLS needs from pinned sources when
+they are missing. The document explains each step and the three mistakes that
+each cost an hour to find.
 
 ### 4. Install and start Steam
 

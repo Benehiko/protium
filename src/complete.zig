@@ -16,9 +16,9 @@ const catalog = @import("catalog.zig");
 const shell = @import("shell.zig");
 
 pub const commands = [_][]const u8{
-    "doctor", "build", "redist",  "status",     "env",        "use",
-    "prefix", "run",   "install", "shell-init", "completion", "version",
-    "help",
+    "doctor", "build",   "redist",  "status",     "env",        "use",
+    "prefix", "run",     "install", "shell-init", "completion", "version",
+    "help",   "runtime",
 };
 pub const prefix_subcommands = [_][]const u8{ "list", "new", "stop", "remove", "migrate-user" };
 /// What `protium install` takes besides a catalogue name.

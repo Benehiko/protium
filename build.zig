@@ -43,6 +43,14 @@ pub fn build(b: *std.Build) void {
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "version", version);
 
+    // The SHA-256 of the runtime archive the release this binary belongs to
+    // publishes. The release workflow builds the runtime first and passes its
+    // hash here, so `protium runtime install` can refuse anything else; the
+    // binary itself is what the release's signature vouches for. Empty, as in
+    // a development build, means there is no published runtime to install.
+    const runtime_sha256 = b.option([]const u8, "runtime_sha256", "SHA-256 of the runtime archive this release publishes") orelse "";
+    build_options.addOption([]const u8, "runtime_sha256", runtime_sha256);
+
     const exe = b.addExecutable(.{
         .name = "protium",
         .root_module = b.createModule(.{
