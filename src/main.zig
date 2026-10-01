@@ -2022,6 +2022,17 @@ fn buildWine(
     try vars.put("PATH", try recipe.buildPath(arena, paths, inherited_path));
     defer if (inherited_path) |p| vars.put("PATH", p) catch {};
 
+    // The oldest macOS the runtime has to load on, for every compile and
+    // link below, and put back afterwards for the same reason as PATH. See
+    // `recipe.macos_min`.
+    const inherited_target = if (vars.get("MACOSX_DEPLOYMENT_TARGET")) |t| try arena.dupe(u8, t) else null;
+    try vars.put("MACOSX_DEPLOYMENT_TARGET", recipe.macos_min);
+    defer if (inherited_target) |t| {
+        vars.put("MACOSX_DEPLOYMENT_TARGET", t) catch {};
+    } else {
+        _ = vars.swapRemove("MACOSX_DEPLOYMENT_TARGET");
+    };
+
     try Io.Dir.cwd().createDirPath(io, build_root);
 
     if (try buildDeps(arena, io, vars, sess, paths, w) != 0) return 1;

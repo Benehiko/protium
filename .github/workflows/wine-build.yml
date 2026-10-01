@@ -1,0 +1,103 @@
+name: wine-build
+
+# Builds the Wine runtime from an empty root, exactly as `protium build` does on
+# someone's Mac, and checks what came out. This is the first half of shipping a
+# prebuilt runtime: it proves the recipe runs on a machine nobody prepared, on
+# the oldest macOS the runtime supports (macos-15, see `recipe.macos_min`).
+# The runtime is kept as a workflow artifact for a week, not published.
+#
+# It runs on demand, and on pull requests that change what the runtime is made
+# of. A build takes a long time, so it does not run on every change.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - src/recipe.zig
+      - patches/**
+      - .github/workflows/wine-build.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # Apple silicon. protium refuses an Intel Mac (src/doctor.zig).
+    runs-on: macos-15
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.16.0
+
+      # Wine is x86-64 and its configure runs what it compiles, so the build
+      # needs Rosetta. Install it if the image does not already have it.
+      - name: rosetta
+        run: |
+          arch -x86_64 /usr/bin/true 2>/dev/null || sudo softwareupdate --install-rosetta --agree-to-license
+          arch -x86_64 /usr/bin/true
+
+      - name: protium
+        run: |
+          zig build -Doptimize=ReleaseSafe
+          echo "PROTIUM_HOME=$RUNNER_TEMP/protium" >> "$GITHUB_ENV"
+          sw_vers
+
+      # Everything: the four libraries in deps, bison, llvm-mingw, CrossOver's
+      # sources, Wine, and the install. Each download is refused unless it
+      # matches the SHA-256 the recipe pins.
+      - name: build
+        run: ./zig-out/bin/protium build
+
+      - name: check the runtime
+        run: |
+          set -eu
+          set -- "$PROTIUM_HOME"/runtimes/*/
+          [ "$#" -eq 1 ] || { echo "expected one runtime, found $#: $*" >&2; exit 1; }
+          rt=${1%/}
+          echo "runtime: $rt"
+          echo "RUNTIME=$(basename "$rt")" >> "$GITHUB_ENV"
+
+          # No Mach-O may ask for a macOS newer than the oldest one supported.
+          # LC_BUILD_VERSION says `minos`; the older LC_VERSION_MIN_MACOSX,
+          # which Wine's loader uses, says `version`.
+          max_major=15 max_minor=0 bad=0 count=0
+          while IFS= read -r f; do
+            v=$(otool -l "$f" | awk '$1=="minos"{print $2; exit} $1=="cmd" && $2=="LC_VERSION_MIN_MACOSX"{m=1} m && $1=="version"{print $2; exit}')
+            [ -n "$v" ] || { echo "no minimum macOS in $f" >&2; bad=1; continue; }
+            major=${v%%.*} rest=${v#*.} minor=${rest%%.*}
+            count=$((count + 1))
+            if [ "$major" -gt "$max_major" ] || { [ "$major" -eq "$max_major" ] && [ "$minor" -gt "$max_minor" ]; }; then
+              echo "too new: $f wants macOS $v" >&2; bad=1
+            fi
+          done < <(find "$rt" -type f \( -name '*.so' -o -name '*.dylib' -o -perm -u+x \) -exec file {} + | grep 'Mach-O' | cut -d: -f1)
+          echo "Mach-O files checked: $count"
+          [ "$count" -gt 0 ] && [ "$bad" -eq 0 ]
+
+          # The bundled libraries are x86-64 and refer only to each other.
+          for lib in libfreetype.6 libgnutls.30 libnettle.8 libhogweed.6 libgmp.10; do
+            f="$rt/lib/$lib.dylib"
+            [ "$(lipo -archs "$f")" = "x86_64" ] || { echo "$f is not x86_64" >&2; exit 1; }
+            ! otool -L "$f" | grep -F "$PROTIUM_HOME/deps" || { echo "$f still names deps" >&2; exit 1; }
+          done
+          [ "$(lipo -archs "$rt/bin/wine")" = "x86_64" ]
+
+      # The runtime boots a prefix and runs a Windows program. No D3DMetal:
+      # that is Apple's, and is never part of this.
+      - name: smoke test
+        run: |
+          ./zig-out/bin/protium prefix new ci --force
+          WINEDEBUG=-all ./zig-out/bin/protium run --prefix ci cmd /c ver | tee "$RUNNER_TEMP/ver.txt"
+          grep -q 'Microsoft Windows' "$RUNNER_TEMP/ver.txt"
+
+      - name: package
+        run: tar -C "$PROTIUM_HOME/runtimes" -czf "$RUNNER_TEMP/$RUNTIME-macos-x86_64.tar.gz" "$RUNTIME"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.RUNTIME }}-macos-x86_64
+          path: ${{ runner.temp }}/${{ env.RUNTIME }}-macos-x86_64.tar.gz
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
