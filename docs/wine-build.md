@@ -203,11 +203,40 @@ nothing is lost. An x86_64 test program then loaded `libgnutls.30.dylib` by
 bare soname and completed TLS 1.3 handshakes with `www.gnu.org` and
 `steamcommunity.com` under Rosetta.
 
-**Not yet verified:** a `protium build` from an empty root that builds the
-prefix itself, and a Wine built against the rebuilt prefix. Nettle's
-assembly is its "fat" variant (`x86_64/fat`), which chooses by CPUID at run
-time. Everything is built for macOS 26.0, the build machine's version; nothing
-sets `MACOSX_DEPLOYMENT_TARGET`.
+*Verified end to end on 2026-10-01, from an empty root:* `protium build` with
+`PROTIUM_HOME=/tmp/pv` fetched the four archives (each matching its pinned
+SHA-256), configured and built them into `deps`, then built and installed
+`wine-11.0-cx26.3-p2`. The `deps` it produced matches the shell-built one
+above: same `otool -L`, headers, `.pc` versions and export counts. In the
+runtime, the five copied dylibs refer only to each other by `@loader_path`,
+and none names the `deps` prefix. `config.h` has `SONAME_LIBFREETYPE` and
+`SONAME_LIBGNUTLS`. `advapi32.dll` carries `protium`.
+
+A test program cross-compiled with `zig cc -target x86_64-windows-gnu` was then
+run in a fresh prefix with `WINEDEBUG=+winediag`. It used that runtime and,
+as a control, the hand-built-`deps` runtime from 2026-09-08, and both gave the
+same results:
+
+| Check | Result |
+| --- | --- |
+| `EnumFontFamiliesExW` | 1185 font families |
+| `GetGlyphOutlineW` for `A` in Tahoma | rasterised, 11×12 |
+| WinHTTP `GET https://www.gnu.org/` | HTTP 200 |
+| WinHTTP `GET https://steamcommunity.com/` | HTTP 200 |
+| `winediag` about FreeType or GnuTLS | none |
+
+**Launch Wine directly, not through a system binary, when checking this.** The
+first attempt ran it under `/usr/bin/perl` (for a timeout). System Integrity
+Protection strips `DYLD_*` from the environment of protected binaries, so
+`DYLD_FALLBACK_LIBRARY_PATH` never reached Wine. That produced 0 fonts and
+`Failed to load libgnutls, secure connections will not be available`, which
+looks exactly like a broken runtime.
+
+**Not verified:** windows actually painting. The checks ran without access to
+the window server, so both runtimes reported `The graphics driver is missing`
+alike. Nettle's assembly is its "fat" variant (`x86_64/fat`), which chooses by
+CPUID at run time. Everything is built for macOS 26.0, the build machine's
+version; nothing sets `MACOSX_DEPLOYMENT_TARGET`.
 
 ## Three traps, each of which costs an hour
 
