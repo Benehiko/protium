@@ -71,9 +71,12 @@ jobs:
             if [ "$major" -gt "$max_major" ] || { [ "$major" -eq "$max_major" ] && [ "$minor" -gt "$max_minor" ]; }; then
               echo "too new: $f wants macOS $v" >&2; bad=1
             fi
-          done < <(find "$rt" -type f \( -name '*.so' -o -name '*.dylib' -o -perm -u+x \) -exec file {} + | grep 'Mach-O' | cut -d: -f1)
+          done < <(find -H "$rt" -type f \( -name '*.so' -o -name '*.dylib' -o -perm -u+x \) -exec file {} + | grep 'Mach-O' | cut -d: -f1)
           echo "Mach-O files checked: $count"
-          [ "$count" -gt 0 ] && [ "$bad" -eq 0 ]
+          # Explicit: `set -e` does not stop on a failed `&&` list, so a
+          # check written as `[ … ] && [ … ]` would pass having found nothing.
+          if [ "$count" -eq 0 ]; then echo "no Mach-O files found in $rt" >&2; exit 1; fi
+          if [ "$bad" -ne 0 ]; then exit 1; fi
 
           # The bundled libraries are x86-64 and refer only to each other.
           for lib in libfreetype.6 libgnutls.30 libnettle.8 libhogweed.6 libgmp.10; do
