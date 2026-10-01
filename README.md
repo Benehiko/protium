@@ -75,6 +75,18 @@ downloads it rather than a browser, macOS does not quarantine it. To build the
 same Wine on your Mac instead, run `protium build` in its place: it is
 unattended, and takes about 10 minutes on an M4.
 
+Downloaded the runtime archive from the releases page yourself, for a Mac
+without a network connection, say? Give `protium runtime install` its path:
+
+```sh
+protium runtime install ~/Downloads/wine-11.0-cx26.3-p2-macos-x86_64.tar.gz
+```
+
+The same SHA-256 check applies, and the installed files are not quarantined.
+Do not unpack the archive in Finder and copy the folder into place: that skips
+the check, and Archive Utility passes the download's quarantine on to every
+file it extracts.
+
 `protium build` follows [docs/wine-build.md](docs/wine-build.md). It builds the
 x86-64 FreeType, GnuTLS and the libraries GnuTLS needs from pinned sources when
 they are missing. The document explains each step and the three mistakes that

@@ -8,7 +8,7 @@ For Apple silicon Macs:
 * `protium-@VERSION@-macos-aarch64.tar.gz`: the `protium` binary and its
   licence texts. This is the one you download.
 * `wine-…-macos-x86_64.tar.gz`: the Wine runtime this release was built with.
-  You do not download it yourself: `protium runtime install` fetches it and
+  You need not download it yourself: `protium runtime install` fetches it and
   installs it only if its SHA-256 matches the one compiled into protium. It
   loads on macOS 15 and later. It was checked on macOS 15 by the workflow that
   built it, and played on macOS 26. Its licence texts are inside it, in
@@ -85,6 +85,12 @@ protium status            # where the installation is, and the next step
 
 To build the same Wine on your Mac instead, run `protium doctor` and then
 `protium build` in place of `protium runtime install`.
+
+If you downloaded the runtime archive from this page yourself, give its path:
+`protium runtime install ~/Downloads/wine-…-macos-x86_64.tar.gz`. It is checked
+against the same SHA-256, and the installed files are not quarantined. Do not
+unpack it in Finder and copy the folder into place: that skips the check, and
+Archive Utility passes the download's quarantine on to every file it extracts.
 
 The README covers D3DMetal, which comes from Apple, and `protium shell-init`
 prints the line that makes prefixes automatic in every new terminal.
