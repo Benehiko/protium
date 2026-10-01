@@ -38,7 +38,7 @@ The first release that carries Wine itself.
   merges it into the runtime, keeping Wine's own Direct3D modules aside, so
   there is no longer a second, destructive install method to choose between.
   `protium d3dmetal check` reports the runtime's D3DMetal, or what Apple's
-  download holds. `protium redist` is gone.
+  download holds. Tab-completion knows both. `protium redist` is gone.
 
 ### Fixed
 

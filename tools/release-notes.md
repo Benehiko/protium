@@ -18,8 +18,9 @@ For Apple silicon Macs:
   GnuTLS, Nettle and GMP.
 
 It does **not** hold D3DMetal, which comes from Apple's Game Porting Toolkit
-and which you download yourself (see the README). Apple's D3DMetal 4.0b2 needs
-macOS 26.4 or later. Wine Mono, Wine's .NET runtime, is fetched by
+and which you download yourself (see the README); `protium d3dmetal install`
+then installs it into the runtime. Apple's D3DMetal 4.0b2 needs macOS 26.4 or
+later. Wine Mono, Wine's .NET runtime, is fetched by
 `protium prefix new` when it creates a prefix.
 
 This software is based in part on the work of the Independent JPEG Group.
@@ -80,8 +81,14 @@ Then let protium tell you what is left to do:
 
 ```sh
 protium runtime install   # the Wine this release was built with
+protium d3dmetal install  # Apple's D3DMetal, from the toolkit DMG in ~/Downloads
 protium status            # where the installation is, and the next step
 ```
+
+`protium d3dmetal install` also takes a path: the Game Porting Toolkit `.dmg`,
+the evaluation environment inside it, either one mounted, or its `redist/lib`
+folder. It opens a disk image in your terminal, where `hdiutil` asks you to
+accept Apple's licence.
 
 To build the same Wine on your Mac instead, run `protium doctor` and then
 `protium build` in place of `protium runtime install`.
@@ -92,7 +99,7 @@ against the same SHA-256, and the installed files are not quarantined. Do not
 unpack it in Finder and copy the folder into place: that skips the check, and
 Archive Utility passes the download's quarantine on to every file it extracts.
 
-The README covers D3DMetal, which comes from Apple, and `protium shell-init`
+The README covers where to get Apple's download, and `protium shell-init`
 prints the line that makes prefixes automatic in every new terminal.
 
 ## "cannot be opened" or "Apple could not verify"
