@@ -72,6 +72,20 @@ binaries and cannot relax those terms. A runtime `protium build` produces also
 carries five libraries of other people's — see below — and each brings its own
 conditions with it.
 
+## Wine Mono
+
+| | |
+| --- | --- |
+| **What** | Wine's own .NET runtime, an MSI that `wineboot` installs into every new prefix |
+| **Version** | 10.4.1, the `MONO_VERSION` this Wine pins in `dlls/appwiz.cpl/addons.c` |
+| **Obtained from** | `https://dl.winehq.org/wine/wine-mono/10.4.1/wine-mono-10.4.1-x86.msi`, sha256 `071f4b28…ba358e23`, the `MONO_SHA` Wine pins |
+| **Licence** | Wine Mono's own, as published by the Wine project; consult the package and its upstream |
+
+**protium does not ship it.** `protium prefix new` fetches it on your Mac into
+`<root>/cache/wine/`, checks it against the hash, and points that one
+`wineboot` at it (`recipe.wine_mono`). Without it, Wine asks in a dialog
+whether to download it. The runtime archive never contains it.
+
 ## Libraries a built runtime carries
 
 `protium build` copies five x86-64 dylibs from `<root>/deps` into the
