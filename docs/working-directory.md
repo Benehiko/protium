@@ -113,5 +113,5 @@ That is the game freeing `0x3e80000ea60`, which looks like two small integers
 pointer is 16-aligned, so it passes the only check made before that read, and
 the read faults. A launcher sees the exit code `0xC0000005`, and `protium run`
 reports `5`, its low byte. It happens after the game has stopped, and at the
-title screen nothing is being saved. Whether Windows survives the same free,
-and whether protium's clang-built PE side plays a part, is open.
+title screen nothing is being saved. The investigation, what it ruled out and
+what is still open, is in [Elden Ring crashes when it quits](quit-crash.md).
