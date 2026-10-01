@@ -16,11 +16,12 @@ const catalog = @import("catalog.zig");
 const shell = @import("shell.zig");
 
 pub const commands = [_][]const u8{
-    "doctor", "build",   "redist",  "status",     "env",        "use",
-    "prefix", "run",     "install", "shell-init", "completion", "version",
+    "doctor", "build",   "d3dmetal", "status",     "env",        "use",
+    "prefix", "run",     "install",  "shell-init", "completion", "version",
     "help",   "runtime",
 };
 pub const prefix_subcommands = [_][]const u8{ "list", "new", "stop", "remove", "migrate-user" };
+pub const d3dmetal_subcommands = [_][]const u8{ "install", "check" };
 /// What `protium install` takes besides a catalogue name.
 pub const install_specials = [_][]const u8{ "list", "clean" };
 pub const options = [_][]const u8{ "--prefix", "--runtime", "--shell", "--force", "--refresh", "--undo" };
@@ -33,6 +34,7 @@ pub const Kind = enum {
     options,
     install_names,
     prefix_subcommands,
+    d3dmetal_subcommands,
     prefix_names,
     runtime_names,
     programs,
@@ -88,6 +90,7 @@ pub fn kindAt(words: []const []const u8) Kind {
     if (eql(cmd, "run")) return .programs;
     if (eql(cmd, "use")) return if (npos == 1) .prefix_names else .none;
     if (eql(cmd, "completion")) return if (npos == 1) .shells else .none;
+    if (eql(cmd, "d3dmetal")) return if (npos == 1) .d3dmetal_subcommands else .none;
     if (eql(cmd, "prefix")) {
         if (npos == 1) return .prefix_subcommands;
         if (npos == 2 and (eql(pos[1], "stop") or eql(pos[1], "remove"))) return .prefix_names;
@@ -388,6 +391,13 @@ test "prefix subcommands, and the ones that name a prefix" {
     try testing.expectEqual(Kind.none, kind(&.{ "prefix", "new", "" }));
     try testing.expectEqual(Kind.prefix_names, kind(&.{ "use", "" }));
     try testing.expectEqual(Kind.shells, kind(&.{ "completion", "" }));
+}
+
+test "d3dmetal completes its subcommands, once" {
+    try testing.expectEqual(Kind.d3dmetal_subcommands, kind(&.{ "d3dmetal", "" }));
+    try testing.expectEqual(Kind.d3dmetal_subcommands, kind(&.{ "d3dmetal", "--runtime", "w", "ch" }));
+    try testing.expectEqual(Kind.none, kind(&.{ "d3dmetal", "install", "" }));
+    try testing.expectEqual(Kind.runtime_names, kind(&.{ "d3dmetal", "install", "--runtime", "" }));
 }
 
 test "emit keeps only what starts with the word, ignoring case" {

@@ -8,7 +8,7 @@
 pub const semver = @import("semver.zig");
 pub const macho = @import("macho.zig");
 pub const plist = @import("plist.zig");
-pub const redist = @import("redist.zig");
+pub const d3dmetal = @import("d3dmetal.zig");
 pub const toolchain = @import("toolchain.zig");
 pub const doctor = @import("doctor.zig");
 pub const layout = @import("layout.zig");
@@ -29,7 +29,7 @@ test {
     _ = semver;
     _ = macho;
     _ = plist;
-    _ = redist;
+    _ = d3dmetal;
     _ = toolchain;
     _ = doctor;
     _ = layout;

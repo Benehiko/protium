@@ -56,17 +56,20 @@ also explain how to clear it.
 ```sh
 protium doctor               # check the prerequisites
 protium runtime install      # install the Wine this release was built with
-protium redist "/Volumes/…/redist/lib" --into ~/.local/share/protium/runtimes/<name>/lib
+protium d3dmetal install     # install Apple's D3DMetal from the toolkit DMG in ~/Downloads
 protium prefix new default   # create a Windows prefix
 protium shell-init           # print a line to add to your shell's rc file
 ```
 
 Run `protium status` at any point to see where you are and what comes next.
 
-> [!WARNING]
-> `protium redist` offers two install methods, and **one destroys the Wine you
-> just built**. protium inspects the destination and prints the right one.
-> Read it before you run it.
+`protium d3dmetal install` takes the toolkit's `.dmg`, the evaluation
+environment inside it, either one mounted, or its `redist/lib` folder; without
+a path it uses the `Game_Porting_Toolkit_*.dmg` in `~/Downloads`. It opens a
+disk image in your terminal, where `hdiutil` asks you to accept Apple's
+licence, checks the payload, and merges it into the runtime, keeping Wine's own
+Direct3D modules aside. `protium d3dmetal check` reports which D3DMetal the
+runtime has, or, given a path, what Apple's download holds.
 
 `protium runtime install` downloads the Wine runtime that this release of
 protium was built with, and installs it only if its SHA-256 matches the one
@@ -233,7 +236,7 @@ alone has no process to run in. Proton cannot be ported to macOS;
 
 protium is early. Here is what works and what does not.
 
-* **Works:** the Wine build, `protium doctor`, `protium redist`, prefixes and
+* **Works:** the Wine build, `protium doctor`, `protium d3dmetal`, prefixes and
   launching. Elden Ring plays on a protium-built Wine with no CrossOver runtime:
   the save loads, the world renders and the character responds.
 * **Works:** `protium install`. It downloads from the publisher, prints the

@@ -1190,7 +1190,8 @@ same prefix with `--runtime`.
 Built 2026-09-08 from the kept tree with llvm-mingw 20260826 (clang 23.1.0)
 for the PE side and Apple clang 21.0.0 for the unix side, `make` exit 0,
 installed as `wine-11.0-cx26.3-p1` with the same D3DMetal 4.0b2 merged in
-(`protium redist` on the result reports it) and `wine.inf` byte-identical to
+(`protium d3dmetal check` on the result reports it; the command was
+`protium redist` at the time) and `wine.inf` byte-identical to
 the first runtime's. In the installed `ntdll.so`, `NtQueryDirectoryObject`
 now begins `testb %r8b, %r8b`; `kernelbase.dll` still has its four byte
 stores, as it should — the PE side was not the thing to change. `protium run

@@ -39,8 +39,8 @@ One thing it does not do.
 
 * **It does not install D3DMetal**, which it cannot: Apple's DMG needs a
   developer sign-in. The Wine it produces runs `protium run cmd /c ver` and no
-  Direct3D game; the command finishes by printing the `protium redist` line
-  that installs Apple's half into what it just built.
+  Direct3D game; the command finishes by pointing at `protium d3dmetal
+  install`, which installs Apple's half into what it just built.
 
 Every step decides for itself whether it has already been done, and decides by
 a file the step itself produces — `tools/bin/bison`, `wine/VERSION`, the
@@ -405,8 +405,8 @@ install name, which is tidier for a permanent installation.
 ## Then install D3DMetal
 
 The Wine tree is only half an environment. See [`d3dmetal.md`](d3dmetal.md);
-`protium redist <dir> --into <wine>/lib` prints the right procedure for that
-destination.
+`protium d3dmetal install` merges Apple's payload into the runtime;
+`--runtime <name>` picks one other than the default.
 
 ## Installing it somewhere durable
 
@@ -494,15 +494,15 @@ Two things must then be added to it:
   Verify with `otool -L` on each of the five: no line should name `$DEPS`.
 
 * **D3DMetal**, merged in — see [`d3dmetal.md`](d3dmetal.md) for why merged and
-  not moved aside. `protium redist <apple-redist-lib> --into <install>/lib`
-  prints the right procedure for that destination. A second runtime built from
+  not moved aside. `protium d3dmetal install --runtime <name>` does the
+  merge. A second runtime built from
   the same tree can take it from the first instead of from Apple's DMG: `ditto`
   `lib/external` across, move the new build's own `d3d10.dll d3d11.dll
   d3d12.dll dxgi.dll` into `lib/wine-d3d-originals`, copy the first runtime's
   four installed `lib/wine/x86_64-windows/{d3d10,d3d11,d3d12,dxgi}.dll` into
   the new one's, and recreate the four `x86_64-unix/*.so` symlinks to
-  `../../external/libd3dshared.dylib`. `protium redist <install>/lib` then
-  reports the version it found, and it had better be the same one.
+  `../../external/libd3dshared.dylib`. `protium d3dmetal check --runtime <name>`
+  then reports the version it found, and it had better be the same one.
 
   **Take the shims from `lib/wine/x86_64-windows`, not from
   `lib/d3dmetal-shims`.** That second directory is a copy the original merge
@@ -519,8 +519,8 @@ Two things must then be added to it:
   unpatched runtime and `-p1` were deleted once the Elden Ring prefix had been
   migrated onto the `protium` profile. The shortcut above therefore has no
   first runtime to copy from any more, and the next rebuild takes D3DMetal
-  from Apple's DMG again — `protium redist <apple-redist-lib> --into
-  <install>/lib`.
+  from Apple's DMG again — `protium d3dmetal install --runtime
+  <name>`.
 
 A second runtime from the same tree has one more step, or the prefix pays for
 it. Wine keeps the modification time of the `wine.inf` it last ran in

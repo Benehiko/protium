@@ -1,5 +1,6 @@
-//! The shape of Apple's evaluation-environment redistributable, and what
-//! installing it into a Wine tree means.
+//! D3DMetal, Apple's half of the environment: the shape of the payload in
+//! Apple's Game Porting Toolkit, how to recognise the disk images it comes in,
+//! and where protium keeps the Wine modules it replaces.
 //!
 //! The payload is deliberately not described as a fixed file list, because it
 //! is not one: D3DMetal 3.0 ships `atidxx64.dll` and `nvngx.dll`, 4.0b2 drops
@@ -28,10 +29,44 @@ pub const framework_plist = "external/D3DMetal.framework/Resources/Info.plist";
 pub const windows_dir = "wine/x86_64-windows";
 pub const unix_dir = "wine/x86_64-unix";
 
-/// A file only a real Wine module tree has. Its presence is what separates a
-/// Wine `lib` from a directory holding only Apple's payload, and therefore
-/// which of the two install procedures is correct.
+/// A file only a real Wine module tree has. `d3dmetal install` refuses a
+/// destination without it, so the payload only ever goes into a runtime.
 pub const wine_module_marker = "wine/x86_64-windows/ntdll.dll";
+
+/// Where, inside a runtime's `lib/`, the Wine modules Apple's shims replace
+/// are kept: Wine's own `d3d10.dll`, `d3d11.dll`, `d3d12.dll` and `dxgi.dll`.
+pub const originals_dir = "wine-d3d-originals";
+
+/// Apple's download, as it lands in ~/Downloads:
+/// `Game_Porting_Toolkit_4.0_beta_2.dmg`.
+pub fn isToolkitImage(name: []const u8) bool {
+    return std.mem.startsWith(u8, name, "Game_Porting_Toolkit") and std.mem.endsWith(u8, name, ".dmg");
+}
+
+/// The image inside the toolkit's that holds the payload:
+/// `Evaluation environment for Windows games 4.0 beta 2.dmg`. It carries
+/// Apple's licence agreement, which `hdiutil` asks the person to accept.
+pub fn isEvaluationImage(name: []const u8) bool {
+    return std.mem.startsWith(u8, name, "Evaluation environment") and std.mem.endsWith(u8, name, ".dmg");
+}
+
+pub const Choice = union(enum) {
+    none,
+    one: []const u8,
+    /// More than one: which is wanted is the person's to say, not a guess.
+    several,
+};
+
+/// Which of a directory's entries is the toolkit image to use.
+pub fn chooseToolkit(names: []const []const u8) Choice {
+    var found: ?[]const u8 = null;
+    for (names) |n| {
+        if (!isToolkitImage(n)) continue;
+        if (found != null) return .several;
+        found = n;
+    }
+    return if (found) |n| .{ .one = n } else .none;
+}
 
 /// What every unix-side shim must point at, relative to `unix_dir`.
 pub const symlink_target = "../../external/libd3dshared.dylib";
@@ -90,30 +125,6 @@ fn contains(haystack: []const []const u8, needle: []const u8) bool {
     return false;
 }
 
-pub const InstallStyle = enum {
-    /// Copy the tree in on top of what is there, overwriting same-named files.
-    /// Wine ships its own `d3d11.dll`, `d3d12.dll` and `dxgi.dll` — its
-    /// WineD3D and vkd3d implementations — and the point of installing
-    /// D3DMetal is to take their place.
-    merge,
-    /// Move the old payload aside and copy the new one in whole.
-    replace,
-};
-
-/// How to install into a destination, decided by whether that destination is a
-/// real Wine module tree or a directory holding only a D3DMetal payload.
-///
-/// Apple's Read Me gives the `mv external external.old; mv wine wine.old;
-/// ditto` procedure, and it is correct for the case Apple has in mind: a
-/// vendor directory containing nothing but the evaluation environment, such as
-/// CrossOver's `lib64/apple_gptk`. Run against a Wine built from source, where
-/// `lib/wine` holds every module Wine has, that same procedure moves the
-/// entire Win32 implementation out of the way and replaces it with six shims.
-/// The Wine no longer has an `ntdll.dll`.
-pub fn installStyle(dest_has_wine_modules: bool) InstallStyle {
-    return if (dest_has_wine_modules) .merge else .replace;
-}
-
 const testing = std.testing;
 
 test "a PE shim names its unix counterpart" {
@@ -152,17 +163,24 @@ test "an unpaired shim is reported from whichever side it is missing" {
     try testing.expectEqualStrings("d3d9.so", issues[0].orphan_unix);
 }
 
+test "Apple's two disk images are told apart by name" {
+    try testing.expect(isToolkitImage("Game_Porting_Toolkit_4.0_beta_2.dmg"));
+    try testing.expect(!isToolkitImage("Game_Porting_Toolkit_4.0_beta_2.dmg.part"));
+    try testing.expect(!isToolkitImage("Firefox 154.0.dmg"));
+    try testing.expect(isEvaluationImage("Evaluation environment for Windows games 4.0 beta 2.dmg"));
+    try testing.expect(!isEvaluationImage("Metal Shader Converter 4.0 beta 2.pkg"));
+}
+
+test "the toolkit image is chosen only when there is exactly one" {
+    try testing.expectEqual(Choice.none, chooseToolkit(&.{ "Firefox 154.0.dmg", "TIDAL.arm64.dmg" }));
+    const one = chooseToolkit(&.{ "Firefox 154.0.dmg", "Game_Porting_Toolkit_4.0_beta_2.dmg" });
+    try testing.expectEqualStrings("Game_Porting_Toolkit_4.0_beta_2.dmg", one.one);
+    // Two releases side by side: which is wanted is not protium's guess.
+    try testing.expectEqual(Choice.several, chooseToolkit(&.{ "Game_Porting_Toolkit_3.0.dmg", "Game_Porting_Toolkit_4.0_beta_2.dmg" }));
+}
+
 test "more issues than the buffer holds are counted, not dropped silently" {
     const dlls = [_][]const u8{ "a.dll", "b.dll", "c.dll" };
     var one: [1]Issue = undefined;
     try testing.expectEqual(@as(usize, 3), checkPairs(&dlls, &[_][]const u8{}, &one));
-}
-
-test "installing into a Wine module tree merges; into a payload directory replaces" {
-    // CrossOver's lib64/apple_gptk holds only the payload, so Apple's
-    // mv-then-ditto is right there.
-    try testing.expectEqual(InstallStyle.replace, installStyle(false));
-    // A Wine built from source keeps ntdll.dll in the same directory. Moving
-    // that aside would leave a Wine with no Win32 implementation at all.
-    try testing.expectEqual(InstallStyle.merge, installStyle(true));
 }

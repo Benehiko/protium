@@ -13,7 +13,7 @@ const Io = std.Io;
 
 const doctor = @import("doctor.zig");
 const toolchain = @import("toolchain.zig");
-const redist = @import("redist.zig");
+const d3dmetal = @import("d3dmetal.zig");
 const macho = @import("macho.zig");
 const plist = @import("plist.zig");
 const layout = @import("layout.zig");
@@ -82,12 +82,16 @@ const usage =
     \\  protium use <name>                Make a prefix the default.
     \\  protium env                       Print the environment, as shell code.
     \\
-    \\Installing Apple's half:
-    \\  protium redist <dir> [--into <wine-lib>]
-    \\      Verify an Apple evaluation-environment tree — the `redist/lib`
-    \\      directory from Apple's DMG — reporting its D3DMetal version, its
-    \\      architecture, and whether its PE shims and unix modules pair up.
-    \\      With --into, also print how to install it into a Wine tree.
+    \\Apple's half, D3DMetal:
+    \\  protium d3dmetal install [<path>]
+    \\      Install D3DMetal from Apple's Game Porting Toolkit into the runtime.
+    \\      <path> is the toolkit's .dmg, the evaluation-environment .dmg in it,
+    \\      either one mounted, or its redist/lib folder. Without one, the
+    \\      Game_Porting_Toolkit_*.dmg in ~/Downloads. A disk image is opened
+    \\      in your terminal, where hdiutil asks you to accept Apple's licence.
+    \\  protium d3dmetal check [<path>]
+    \\      Without <path>, which D3DMetal the runtime has. With one, what
+    \\      Apple's download holds: its version, architecture and shims.
     \\
     \\  protium version
     \\
@@ -113,7 +117,6 @@ const usage =
 ;
 
 pub fn main(init: std.process.Init) !void {
-    const gpa = init.gpa;
     const io = init.io;
     const arena = init.arena.allocator();
 
@@ -128,13 +131,12 @@ pub fn main(init: std.process.Init) !void {
     const cmd = if (args.len > 1) args[1] else "help";
     const rest = if (args.len > 2) args[2..] else &.{};
 
-    const code = try dispatch(gpa, arena, io, init.environ_map, cmd, rest, w);
+    const code = try dispatch(arena, io, init.environ_map, cmd, rest, w);
     try w.flush();
     if (code != 0) std.process.exit(code);
 }
 
 fn dispatch(
-    gpa: std.mem.Allocator,
     arena: std.mem.Allocator,
     io: Io,
     vars: *std.process.Environ.Map,
@@ -145,7 +147,7 @@ fn dispatch(
     if (std.mem.eql(u8, cmd, "doctor")) return runDoctor(io, vars, w);
     if (std.mem.eql(u8, cmd, "build")) return runBuild(arena, io, vars, rest, w);
     if (std.mem.eql(u8, cmd, "runtime")) return runRuntime(arena, io, vars, rest, w);
-    if (std.mem.eql(u8, cmd, "redist")) return runRedist(gpa, io, rest, w);
+    if (std.mem.eql(u8, cmd, "d3dmetal")) return runD3dmetal(arena, io, vars, rest, w);
     if (std.mem.eql(u8, cmd, "status")) return runStatus(arena, io, vars, rest, w);
     if (std.mem.eql(u8, cmd, "env")) return runEnv(arena, io, vars, rest, w);
     if (std.mem.eql(u8, cmd, "use")) return runUse(arena, io, vars, rest, w);
@@ -1922,6 +1924,7 @@ fn completeInto(
         .commands => try complete.emit(w, &complete.commands, cur),
         .options => try complete.emit(w, &complete.options, cur),
         .prefix_subcommands => try complete.emit(w, &complete.prefix_subcommands, cur),
+        .d3dmetal_subcommands => try complete.emit(w, &complete.d3dmetal_subcommands, cur),
         .shells => try complete.emit(w, &complete.shells, cur),
         .install_names => {
             var all: std.ArrayList([]const u8) = .empty;
@@ -2218,7 +2221,7 @@ fn installRuntime(
         \\
         \\
     );
-    try w.print("  protium redist \"/Volumes/.../redist/lib\" --into {s}/{s}\n", .{ target, layout.lib_dir });
+    try w.writeAll("  protium d3dmetal install\n");
     return 0;
 }
 
@@ -2374,7 +2377,7 @@ fn describeBuild(w: *Io.Writer, paths: recipe.Paths) !void {
         \\
         \\D3DMetal is not part of this and cannot be: it comes from Apple's Game
         \\Porting Toolkit DMG, which needs an Apple developer sign-in. The Wine this
-        \\produces runs `protium run cmd /c ver`; a game needs `protium redist`
+        \\produces runs `protium run cmd /c ver`; a game needs `protium d3dmetal install`
         \\afterwards, which this prints again when it finishes.
         \\
         \\The whole recipe, with the evidence behind each step, is docs/wine-build.md.
@@ -2857,7 +2860,7 @@ fn reportBuilt(w: *Io.Writer, paths: recipe.Paths) !void {
         \\
         \\
     );
-    try w.print("  protium redist \"/Volumes/.../redist/lib\" --into {s}/{s}\n", .{ paths.install, layout.lib_dir });
+    try w.writeAll("  protium d3dmetal install\n");
 }
 
 /// One `-j`, from the number of processors, allocated because `make` takes it
@@ -3546,7 +3549,7 @@ fn runShellInit(vars: *std.process.Environ.Map, args: []const []const u8, w: *Io
 }
 
 // ---------------------------------------------------------------------------
-// doctor and redist
+// doctor and d3dmetal
 
 /// The host report. Returns 0 when everything is satisfied, so a script can
 /// gate on this command without reading its output.
@@ -3580,48 +3583,224 @@ fn runDoctor(io: Io, vars: *const std.process.Environ.Map, w: *Io.Writer) !u8 {
     return if (ok) 0 else 1;
 }
 
-/// Verify an Apple `redist/lib` tree and report what it is.
-fn runRedist(gpa: std.mem.Allocator, io: Io, args: []const []const u8, w: *Io.Writer) !u8 {
-    if (args.len == 0) {
-        try w.writeAll("protium redist: needs a directory — the `redist/lib` from Apple's DMG\n");
+/// `protium d3dmetal install [<path>]` and `protium d3dmetal check [<path>]`.
+fn runD3dmetal(
+    arena: std.mem.Allocator,
+    io: Io,
+    vars: *std.process.Environ.Map,
+    args: []const []const u8,
+    w: *Io.Writer,
+) !u8 {
+    const sub = if (args.len > 0) args[0] else "";
+    const install = std.mem.eql(u8, sub, "install");
+    if (!install and !std.mem.eql(u8, sub, "check")) {
+        try w.writeAll("protium d3dmetal: install or check — `protium d3dmetal install [<path>]`\n");
         return 2;
     }
-    const path = args[0];
-    var into: ?[]const u8 = null;
-    var i: usize = 1;
-    while (i < args.len) : (i += 1) {
-        if (std.mem.eql(u8, args[i], "--into") and i + 1 < args.len) {
-            i += 1;
-            into = args[i];
-        }
+    const name = if (install) "d3dmetal install" else "d3dmetal check";
+    const opts = try parseOptions(arena, args[1..], false);
+    if (opts.bad) |b| return reportBadOption(w, name, b);
+    if (opts.positional.len > 1) {
+        try w.print("protium {s}: give at most one path\n", .{name});
+        return 2;
     }
+    const path: ?[]const u8 = if (opts.positional.len == 1) opts.positional[0] else null;
 
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
+    const sess = session.Session.open(arena, io, vars) catch |err| switch (err) {
+        error.NoHome => {
+            try w.writeAll("protium: no HOME, and no PROTIUM_HOME to use instead\n");
+            return 1;
+        },
+        else => |e| return e,
+    };
+    if (!install and path == null) return checkInstalled(arena, io, sess, opts.runtime, w);
 
-    var dir = Io.Dir.cwd().openDir(io, path, .{}) catch {
-        try w.print("protium redist: cannot open {s}\n", .{path});
+    // Every disk image opened along the way is closed again, whatever happens.
+    var mounts: Mounts = .{};
+    defer mounts.detach(io, vars);
+
+    const lib = (try findPayload(arena, io, vars, sess, path, &mounts, w)) orelse return 1;
+    const ok = try inspectPayload(arena, io, lib, w);
+    if (!install) return if (ok) 0 else 1;
+    if (!ok) {
+        try w.writeAll("\nprotium d3dmetal install: Apple's payload did not check out, so nothing was installed.\n");
         return 1;
+    }
+    return installPayload(arena, io, vars, sess, lib, opts.runtime, opts.force, w);
+}
+
+/// Disk images protium mounted, detached in reverse order.
+const Mounts = struct {
+    points: [4][]const u8 = undefined,
+    n: usize = 0,
+
+    fn detach(m: *Mounts, io: Io, vars: *std.process.Environ.Map) void {
+        var i = m.n;
+        while (i > 0) {
+            i -= 1;
+            _ = spawnQuietly(io, vars, .inherit, &.{ "/usr/bin/hdiutil", "detach", m.points[i], "-quiet" }) catch {};
+            Io.Dir.cwd().deleteDir(io, m.points[i]) catch {};
+        }
+        m.n = 0;
+    }
+};
+
+/// Mount `image` read-only, out of Finder's way, at a mount point of
+/// protium's own. Only with a person at the terminal: the evaluation image
+/// carries Apple's licence agreement, and `hdiutil` asks for it to be
+/// accepted in the terminal it inherits. With nobody there to answer it would
+/// mount without asking, which is not protium's to do.
+fn mountImage(
+    arena: std.mem.Allocator,
+    io: Io,
+    vars: *std.process.Environ.Map,
+    sess: session.Session,
+    image: []const u8,
+    mounts: *Mounts,
+    w: *Io.Writer,
+) !?[]const u8 {
+    if (!(Io.File.stdin().isTty(io) catch false)) {
+        try w.print("protium d3dmetal: {s} is a disk image, and opening it needs you at a terminal:\n", .{image});
+        try w.writeAll(
+            \\Apple's evaluation environment carries a licence agreement that hdiutil asks
+            \\you to accept. Run this in a terminal, or open the image in Finder yourself and
+            \\pass the mounted volume.
+            \\
+        );
+        return null;
+    }
+    if (mounts.n == mounts.points.len) return error.TooManyImages;
+    const point = try sess.join(&.{ sess.root, layout.cache_dir, try std.fmt.allocPrint(arena, "d3dmetal-{d}", .{mounts.n}) });
+    Io.Dir.cwd().deleteDir(io, point) catch {};
+    try Io.Dir.cwd().createDirPath(io, point);
+
+    try w.print("Opening {s}\n", .{image});
+    try w.flush();
+    const code = try spawnAt(io, vars, .inherit, &.{
+        "/usr/bin/hdiutil", "attach",      "-nobrowse", "-readonly",
+        "-noautoopen",      "-mountpoint", point,       image,
+    });
+    if (code != 0) {
+        Io.Dir.cwd().deleteDir(io, point) catch {};
+        try w.print("protium d3dmetal: {s} did not open (hdiutil exited {d}; declining Apple's licence does that).\n", .{ image, code });
+        return null;
+    }
+    mounts.points[mounts.n] = point;
+    mounts.n += 1;
+    return point;
+}
+
+/// The `redist/lib` directory holding Apple's payload, reached from whatever
+/// the person pointed at: the toolkit's image, the evaluation image inside it,
+/// either mounted, or the payload directory itself. With no path, the one
+/// toolkit image in ~/Downloads. Images are mounted on the way.
+fn findPayload(
+    arena: std.mem.Allocator,
+    io: Io,
+    vars: *std.process.Environ.Map,
+    sess: session.Session,
+    given: ?[]const u8,
+    mounts: *Mounts,
+    w: *Io.Writer,
+) !?[]const u8 {
+    var p = given orelse (try defaultToolkit(arena, io, vars, w)) orelse return null;
+    var hops: usize = 0;
+    while (hops < 4) : (hops += 1) {
+        if (std.mem.endsWith(u8, p, ".dmg") and !isDir(io, p)) {
+            if (!exists(io, p)) {
+                try w.print("protium d3dmetal: there is no {s}\n", .{p});
+                return null;
+            }
+            p = (try mountImage(arena, io, vars, sess, p, mounts, w)) orelse return null;
+            continue;
+        }
+        if (!isDir(io, p)) {
+            try w.print("protium d3dmetal: {s} is neither a disk image nor a folder\n", .{p});
+            return null;
+        }
+        if (exists(io, try sess.join(&.{ p, d3dmetal.shared_library }))) return p;
+        const lib = try sess.join(&.{ p, "redist", "lib" });
+        if (exists(io, try sess.join(&.{ lib, d3dmetal.shared_library }))) return lib;
+
+        // The toolkit's own volume: the payload is in the image inside it.
+        var d = Io.Dir.cwd().openDir(io, p, .{ .iterate = true }) catch break;
+        defer d.close(io);
+        var inner: ?[]const u8 = null;
+        var it = d.iterate();
+        while (try it.next(io)) |e| {
+            if (d3dmetal.isEvaluationImage(e.name)) inner = try sess.join(&.{ p, e.name });
+        }
+        p = inner orelse break;
+    }
+    try w.print("protium d3dmetal: found no D3DMetal payload in {s}\n", .{p});
+    try w.writeAll("Point at Apple's Game_Porting_Toolkit_*.dmg, the evaluation environment in it, or its redist/lib.\n");
+    return null;
+}
+
+/// The toolkit image in ~/Downloads, if there is exactly one.
+fn defaultToolkit(arena: std.mem.Allocator, io: Io, vars: *std.process.Environ.Map, w: *Io.Writer) !?[]const u8 {
+    const home = vars.get("HOME") orelse {
+        try w.writeAll("protium d3dmetal install: no HOME to look in for Apple's download; give its path\n");
+        return null;
+    };
+    const downloads = try std.fs.path.join(arena, &.{ home, "Downloads" });
+    var found: std.ArrayList([]const u8) = .empty;
+    if (Io.Dir.cwd().openDir(io, downloads, .{ .iterate = true })) |opened| {
+        var d = opened;
+        defer d.close(io);
+        var it = d.iterate();
+        while (try it.next(io)) |e| try found.append(arena, try arena.dupe(u8, e.name));
+    } else |_| {}
+    switch (d3dmetal.chooseToolkit(found.items)) {
+        .one => |n| {
+            const p = try std.fs.path.join(arena, &.{ downloads, n });
+            try w.print("Using {s}\n", .{p});
+            return p;
+        },
+        .several => {
+            try w.print("protium d3dmetal: more than one Game Porting Toolkit in {s}:\n", .{downloads});
+            for (found.items) |n| if (d3dmetal.isToolkitImage(n)) try w.print("  {s}\n", .{n});
+            try w.writeAll("Give the path of the one you want.\n");
+            return null;
+        },
+        .none => {
+            try w.print("protium d3dmetal: no Game_Porting_Toolkit_*.dmg in {s}.\n", .{downloads});
+            try w.writeAll(
+                \\Download it from Apple, which needs a free Apple developer account:
+                \\  https://developer.apple.com/games/game-porting-toolkit/
+                \\then run this again, or give the path of the .dmg.
+                \\
+            );
+            return null;
+        },
+    }
+}
+
+/// Report what Apple's payload at `lib` is: version, architecture, and whether
+/// every PE shim has its unix-side counterpart. True when all of it checks out.
+fn inspectPayload(arena: std.mem.Allocator, io: Io, lib: []const u8, w: *Io.Writer) !bool {
+    var dir = Io.Dir.cwd().openDir(io, lib, .{}) catch {
+        try w.print("protium d3dmetal: cannot open {s}\n", .{lib});
+        return false;
     };
     defer dir.close(io);
 
-    try w.print("protium redist — {s}\n\n", .{path});
+    try w.print("\nD3DMetal payload — {s}\n\n", .{lib});
     var ok = true;
 
     // The version, which is the single most important thing to record about
     // an environment: the D3D12 shim is not the same object between releases.
-    if (dir.readFileAlloc(io, redist.framework_plist, arena, .limited(1 << 20))) |xml| {
+    if (dir.readFileAlloc(io, d3dmetal.framework_plist, arena, .limited(1 << 20))) |xml| {
         const short = plist.stringValue(xml, "CFBundleShortVersionString") orelse "unknown";
         const platform = plist.stringValue(xml, "DTPlatformVersion") orelse "unknown";
         try w.print("  D3DMetal {s}  (built against platform {s})\n", .{ short, platform });
     } else |_| {
-        try w.print("  D3DMetal version unknown — no {s}\n", .{redist.framework_plist});
+        try w.print("  D3DMetal version unknown — no {s}\n", .{d3dmetal.framework_plist});
         ok = false;
     }
 
     // The architecture, which is why the whole Wine is x86-64.
-    if (dir.readFileAlloc(io, redist.shared_library, arena, .limited(1 << 24))) |bytes| {
+    if (dir.readFileAlloc(io, d3dmetal.shared_library, arena, .limited(1 << 24))) |bytes| {
         if (macho.read(bytes)) |archs| {
             try w.writeAll("  libd3dshared.dylib: ");
             for (archs.slice(), 0..) |a, n| {
@@ -3637,18 +3816,17 @@ fn runRedist(gpa: std.mem.Allocator, io: Io, args: []const []const u8, w: *Io.Wr
             ok = false;
         }
     } else |_| {
-        try w.print("  missing {s}\n", .{redist.shared_library});
+        try w.print("  missing {s}\n", .{d3dmetal.shared_library});
         ok = false;
     }
 
     // The shim pairing. The file list changes between releases; that every PE
     // shim has a unix counterpart does not.
-    const dlls = try names(arena, io, dir, redist.windows_dir);
-    const sos = try names(arena, io, dir, redist.unix_dir);
+    const dlls = try names(arena, io, dir, d3dmetal.windows_dir);
+    const sos = try names(arena, io, dir, d3dmetal.unix_dir);
     try w.print("  shims: {d} PE, {d} unix\n", .{ dlls.len, sos.len });
-
-    var issues: [16]redist.Issue = undefined;
-    const n_issues = redist.checkPairs(dlls, sos, &issues);
+    var issues: [16]d3dmetal.Issue = undefined;
+    const n_issues = d3dmetal.checkPairs(dlls, sos, &issues);
     if (n_issues == 0) {
         try w.writeAll("  every PE shim has its unix counterpart\n");
     } else {
@@ -3658,41 +3836,149 @@ fn runRedist(gpa: std.mem.Allocator, io: Io, args: []const []const u8, w: *Io.Wr
             .orphan_unix => |s| try w.print("  {s} has no PE shim\n", .{s}),
         };
     }
+    return ok;
+}
 
-    if (into) |dest| switch (redist.installStyle(hasWineModules(io, dest))) {
-        .merge => try w.print(
-            \\
-            \\{s} holds Wine's own modules, so the tree merges into it:
-            \\
-            \\  ditto "{s}/" "{s}/"
-            \\
-            \\Apple's Read Me prefixes that with `mv external external.old; mv wine
-            \\wine.old`. Do not do that here. Apple means it for a directory holding
-            \\nothing but the payload — CrossOver's lib64/apple_gptk — and against a
-            \\Wine module tree it moves ntdll.dll and every other module aside,
-            \\leaving six shims where the Win32 implementation used to be.
-            \\
-            \\Wine's own d3d11, d3d12 and dxgi are overwritten, which is the point of
-            \\installing D3DMetal. Copy them somewhere first if you want to A/B
-            \\against WineD3D later.
-            \\
-        , .{ dest, path, dest }),
-        .replace => try w.print(
-            \\
-            \\{s} holds no Wine modules, so it is a payload directory and Apple's own
-            \\procedure applies — the .old copies make it a one-command revert:
-            \\
-            \\  cd {s}
-            \\  mv external external.old; mv wine wine.old
-            \\  ditto "{s}/" .
-            \\
-            \\`ditto` rather than `cp`, because it preserves the relative symlinks and
-            \\the framework structure that the shims resolve through.
-            \\
-        , .{ dest, dest, path }),
+/// Merge Apple's payload at `lib` into the runtime's `lib/`.
+///
+/// Wine's own modules of the same names are moved into `lib/` +
+/// `d3dmetal.originals_dir` first, once, so they can be put back; then the
+/// payload is merged in with `ditto`, which keeps the framework's structure
+/// and the shims' relative symlinks. Only ever into a runtime, so a Wine's
+/// module tree can never be swapped out wholesale the way Apple's procedure
+/// for a payload-only directory would.
+fn installPayload(
+    arena: std.mem.Allocator,
+    io: Io,
+    vars: *std.process.Environ.Map,
+    sess: session.Session,
+    lib: []const u8,
+    asked: ?[]const u8,
+    force: bool,
+    w: *Io.Writer,
+) !u8 {
+    const rt = sess.runtime(asked) catch |err| {
+        try reportUnresolved(sess, w, layout.runtimes, "runtime", asked, err);
+        return 1;
     };
+    const rt_lib = try sess.join(&.{ rt.dir, layout.lib_dir });
+    if (!exists(io, try sess.join(&.{ rt_lib, d3dmetal.wine_module_marker }))) {
+        try w.print("protium d3dmetal install: {s} is not a Wine runtime: it has no {s}\n", .{ rt.dir, d3dmetal.wine_module_marker });
+        return 1;
+    }
 
-    return if (ok) 0 else 1;
+    var new_version: []const u8 = "unknown";
+    if (Io.Dir.cwd().openDir(io, lib, .{})) |opened| {
+        var d = opened;
+        defer d.close(io);
+        if (d.readFileAlloc(io, d3dmetal.framework_plist, arena, .limited(1 << 20))) |xml| {
+            new_version = plist.stringValue(xml, "CFBundleShortVersionString") orelse "unknown";
+        } else |_| {}
+    } else |_| {}
+
+    if (sess.d3dmetalVersion(rt)) |have| {
+        if (std.mem.eql(u8, have, new_version) and !force) {
+            try w.print("\n{s} already has D3DMetal {s}. Pass --force to install it again.\n", .{ rt.name, have });
+            return 0;
+        }
+        // external/ holds nothing but Apple's payload, so the old one goes
+        // whole rather than leaving another release's files behind.
+        removeTree(io, try sess.join(&.{ rt_lib, "external" })) catch |err| {
+            try w.print("protium d3dmetal install: could not remove the D3DMetal {s} already there — {s}\n", .{ have, @errorName(err) });
+            return 1;
+        };
+    }
+
+    const originals = try sess.join(&.{ rt_lib, d3dmetal.originals_dir });
+    try Io.Dir.cwd().createDirPath(io, originals);
+    var kept: std.ArrayList([]const u8) = .empty;
+    var src = try Io.Dir.cwd().openDir(io, lib, .{});
+    defer src.close(io);
+    for ([_][]const u8{ d3dmetal.windows_dir, d3dmetal.unix_dir }) |sub| {
+        for (try names(arena, io, src, sub)) |n| {
+            const dir = try sess.join(&.{ rt_lib, sub });
+            const mine = try sess.join(&.{ dir, n });
+            // Absent, or one of Apple's own links from an earlier install:
+            // nothing of Wine's to keep.
+            if (!exists(io, mine) or isSymlink(io, dir, n)) continue;
+            const keep = try sess.join(&.{ originals, n });
+            // Kept already: what is there now is Apple's, from before.
+            if (exists(io, keep)) continue;
+            try Io.Dir.cwd().rename(mine, Io.Dir.cwd(), keep, io);
+            try kept.append(arena, n);
+        }
+    }
+
+    try w.print("\nInstalling into {s}\n", .{rt_lib});
+    try w.flush();
+    if (try spawnAt(io, vars, .inherit, &.{ "/usr/bin/ditto", lib, rt_lib }) != 0) {
+        try w.writeAll("protium d3dmetal install: ditto failed. The output above says why.\n");
+        return 1;
+    }
+    if (sess.d3dmetalVersion(rt) == null) {
+        try w.print("protium d3dmetal install: the copy finished, but {s} has no {s}\n", .{ rt_lib, d3dmetal.shared_library });
+        return 1;
+    }
+
+    try w.print("\nD3DMetal {s} is installed in the runtime {s}.\n", .{ new_version, rt.name });
+    if (kept.items.len > 0) {
+        try w.writeAll("Wine's own");
+        for (kept.items) |n| try w.print(" {s}", .{n});
+        try w.print(" are kept in {s}.\n", .{originals});
+    }
+    return 0;
+}
+
+/// `protium d3dmetal check` with no path: which D3DMetal the runtime has.
+fn checkInstalled(arena: std.mem.Allocator, io: Io, sess: session.Session, asked: ?[]const u8, w: *Io.Writer) !u8 {
+    const rt = sess.runtime(asked) catch |err| {
+        try reportUnresolved(sess, w, layout.runtimes, "runtime", asked, err);
+        return 1;
+    };
+    const version = sess.d3dmetalVersion(rt) orelse {
+        try w.print("{s} has no D3DMetal. Install it with:\n\n  protium d3dmetal install\n", .{rt.name});
+        return 1;
+    };
+    try w.print("{s}: D3DMetal {s}\n", .{ rt.name, version });
+
+    // Apple's unix-side shims are the links into its shared library; Wine's
+    // own modules beside them are real files.
+    const unix = try sess.join(&.{ rt.dir, layout.lib_dir, d3dmetal.unix_dir });
+    var linked: std.ArrayList([]const u8) = .empty;
+    if (Io.Dir.cwd().openDir(io, unix, .{ .iterate = true })) |opened| {
+        var d = opened;
+        defer d.close(io);
+        var it = d.iterate();
+        while (try it.next(io)) |e| {
+            if (e.kind == .sym_link) try linked.append(arena, try arena.dupe(u8, e.name));
+        }
+    } else |_| {}
+    std.mem.sort([]const u8, linked.items, {}, lessThan);
+    try w.print("  shims linked: {d}", .{linked.items.len});
+    for (linked.items) |n| try w.print(" {s}", .{n});
+    try w.writeAll("\n");
+    return 0;
+}
+
+fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.lessThan(u8, a, b);
+}
+
+fn isDir(io: Io, path: []const u8) bool {
+    var d = Io.Dir.cwd().openDir(io, path, .{}) catch return false;
+    d.close(io);
+    return true;
+}
+
+/// Whether `name` in `dir_path` is a symlink, without following it.
+fn isSymlink(io: Io, dir_path: []const u8, name: []const u8) bool {
+    var d = Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch return false;
+    defer d.close(io);
+    var it = d.iterate();
+    while (it.next(io) catch return false) |e| {
+        if (std.mem.eql(u8, e.name, name)) return e.kind == .sym_link;
+    }
+    return false;
 }
 
 /// Entry names directly inside `sub`, duped into `arena`. A directory that is
@@ -3724,13 +4010,4 @@ fn searchPath(io: Io, path_var: []const u8, program: []const u8, buf: []u8) ?[]c
         return full;
     }
     return null;
-}
-
-/// Does `dest` hold Wine's own modules? This decides how the redistributable
-/// must be installed into it, and getting it wrong destroys the Wine.
-fn hasWineModules(io: Io, dest: []const u8) bool {
-    var d = Io.Dir.cwd().openDir(io, dest, .{}) catch return false;
-    defer d.close(io);
-    d.access(io, redist.wine_module_marker, .{}) catch return false;
-    return true;
 }
