@@ -316,6 +316,38 @@ pub const dep_env_cleared = [_][]const u8{
 ///
 /// `PATH` is the system's alone, the compiler is Apple's by absolute path,
 /// and pkg-config is confined to the prefix being built.
+/// The oldest macOS a runtime built by this recipe loads on: the current
+/// release and the one before it, macOS 26 and macOS 15.
+///
+/// Apple's compiler and linker stamp every Mach-O with the minimum OS it may
+/// run on, taken from `MACOSX_DEPLOYMENT_TARGET` and otherwise from the
+/// machine doing the build. Left unset, a runtime built on macOS 26 says
+/// `minos 26.0` in every binary and macOS 15 refuses to load any of it. It is
+/// set for the libraries in `deps` and for Wine's unix side alike, because
+/// one library newer than the rest is enough to take the runtime down. Wine's
+/// own loader and preloader pin `10.7` themselves, which is older and so
+/// harmless. The PE side is Windows code and is not affected.
+pub const macos_min = "15.0";
+
+/// What is set on top of the inherited environment for the Wine build itself:
+/// bison, configure, make and the install. `dep_env_cleared` is removed as
+/// well.
+///
+/// pkg-config is confined to `deps` for the same reason as in `depEnv`. Wine's
+/// configure asks it for FreeType's and GnuTLS's flags, and a Homebrew copy
+/// answers first: on the GitHub runner, Homebrew's arm64 FreeType put
+/// `-L/opt/homebrew/opt/freetype/lib` ahead of `deps`, and linking
+/// `tools/sfnt2fon` found no FreeType for x86_64 at all. On a Mac whose
+/// Homebrew has `gnutls.pc`, the same leak hands configure Homebrew's GnuTLS
+/// headers instead of the 3.8.4 the runtime carries.
+pub fn wineEnv(gpa: std.mem.Allocator, p: Paths) ![]const EnvVar {
+    return gpa.dupe(EnvVar, &.{
+        .{ .name = "MACOSX_DEPLOYMENT_TARGET", .value = macos_min },
+        .{ .name = "PKG_CONFIG_LIBDIR", .value = try std.fmt.allocPrint(gpa, "{s}/lib/pkgconfig", .{p.deps}) },
+        .{ .name = "PKG_CONFIG_PATH", .value = "" },
+    });
+}
+
 pub fn depEnv(gpa: std.mem.Allocator, deps_dir: []const u8, d: DepBuild) ![]const EnvVar {
     var env: std.ArrayList(EnvVar) = .empty;
     const include = try std.fmt.allocPrint(gpa, "-I{s}/include", .{deps_dir});
@@ -328,6 +360,7 @@ pub fn depEnv(gpa: std.mem.Allocator, deps_dir: []const u8, d: DepBuild) ![]cons
         .{ .name = "LDFLAGS", .value = try std.fmt.allocPrint(gpa, "-L{s}/lib", .{deps_dir}) },
         .{ .name = "PKG_CONFIG_LIBDIR", .value = try std.fmt.allocPrint(gpa, "{s}/lib/pkgconfig", .{deps_dir}) },
         .{ .name = "PKG_CONFIG_PATH", .value = "" },
+        .{ .name = "MACOSX_DEPLOYMENT_TARGET", .value = macos_min },
     });
     for (d.links) |l| {
         try env.append(gpa, .{ .name = try std.fmt.allocPrint(gpa, "{s}_CFLAGS", .{l.variable}), .value = include });
@@ -566,6 +599,36 @@ test "a library is configured for x86-64, shared, into the deps prefix" {
     try testing.expect(saw_host and saw_prefix and saw_shared and saw_tasn1 and saw_no_p11);
 }
 
+test "the Wine build sees only the deps prefix through pkg-config, and targets the oldest macOS" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const env = try wineEnv(a, .{
+        .build = "/r/build",
+        .wine = "/r/build/wine",
+        .out = "/r/build/build-p2",
+        .tools = "/r/build/tools",
+        .mingw = "/r/build/llvm-mingw",
+        .deps = "/r/deps",
+        .install = "/r/runtimes/x",
+    });
+    var libdir: ?[]const u8 = null;
+    var path: ?[]const u8 = null;
+    var target: ?[]const u8 = null;
+    for (env) |e| {
+        try testing.expect(std.mem.indexOf(u8, e.value, "homebrew") == null);
+        if (std.mem.eql(u8, e.name, "PKG_CONFIG_LIBDIR")) libdir = e.value;
+        if (std.mem.eql(u8, e.name, "PKG_CONFIG_PATH")) path = e.value;
+        if (std.mem.eql(u8, e.name, "MACOSX_DEPLOYMENT_TARGET")) target = e.value;
+    }
+    // LIBDIR replaces pkg-config's built-in search path, Homebrew's included,
+    // and an empty PATH adds nothing back.
+    try testing.expectEqualStrings("/r/deps/lib/pkgconfig", libdir.?);
+    try testing.expectEqualStrings("", path.?);
+    try testing.expectEqualStrings(macos_min, target.?);
+}
+
 test "a library's environment keeps Homebrew out and names what it links" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
@@ -586,6 +649,16 @@ test "a library's environment keeps Homebrew out and names what it links" {
         if (std.mem.eql(u8, e.name, "GMP_LIBS") and std.mem.eql(u8, e.value, "-L/r/deps/lib -lgmp")) saw_gmp = true;
     }
     try testing.expect(saw_path and saw_cc and saw_pkg and saw_gmp);
+
+    // Every library is stamped for the oldest macOS the runtime supports,
+    // not for whatever the build machine runs.
+    for (dep_builds) |d| {
+        var target: ?[]const u8 = null;
+        for (try depEnv(a, "/r/deps", d)) |e| {
+            if (std.mem.eql(u8, e.name, "MACOSX_DEPLOYMENT_TARGET")) target = e.value;
+        }
+        try testing.expectEqualStrings(macos_min, target.?);
+    }
 
     // A library that links nothing gets no _LIBS variables.
     for (try depEnv(a, "/r/deps", dep_builds[0])) |e| {
