@@ -91,9 +91,11 @@ A scratch program that prints `GetCurrentDirectory`, put at
 | `main` before the change | `Z:\tmp` | — |
 | with the change | `C:\Games\CwdTest` | `Z:\tmp` |
 
-**Not yet checked:** Elden Ring itself started by the fixed `protium run`. Run
-1 above started it the same way the fixed `protium run` does, but through the
-probe.
+Elden Ring itself, started by the fixed `protium run eldenring.exe` from `~`,
+was resolved to `…/ELDEN RING/Game/eldenring.exe`, given `SteamAppId=1245620`,
+and ran: D3DMetal rendered, and the game's TLS and WMI calls followed. It ended
+only when quit from its menu, in the heap fault described below, not in the
+start-up abort.
 
 ## Not covered by this
 
