@@ -1630,7 +1630,7 @@ fn ensureWineMono(
         try w.print("Fetching Wine Mono {s}, Wine's .NET runtime, once:\n  {s}\n", .{ src.version, src.url });
         try w.flush();
     }
-    const report = fetch.download(arena, io, src.url, dest, false) catch |err| {
+    const report = fetch.downloadRetrying(arena, io, src.url, dest, false, w) catch |err| {
         try w.print("protium: Wine Mono could not be fetched ({s}). Wine will ask about it itself.\n\n", .{@errorName(err)});
         return null;
     };
