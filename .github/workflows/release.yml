@@ -95,8 +95,12 @@ jobs:
       - name: notes
         run: make notes VERSION="$VERSION"
 
+      # A tag with a hyphen, such as v0.2.0-rc1, is a pre-release: published
+      # and downloadable, but never shown as the latest release.
       - name: publish
         run: |
-          gh release create "$VERSION" --verify-tag --title "protium $VERSION" \
+          pre=""
+          case "$VERSION" in *-*) pre="--prerelease" ;; esac
+          gh release create "$VERSION" --verify-tag $pre --title "protium $VERSION" \
             --notes-file dist/notes.md \
             dist/*.tar.* dist/SHA256SUMS dist/SHA256SUMS.sigstore.json
