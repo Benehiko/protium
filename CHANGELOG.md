@@ -6,6 +6,43 @@ pre-release such as `v0.2.0-rc1` uses its version's section. `make tag`
 refuses a version that has no section here, so write the notes first, in a
 pull request like any other change.
 
+## v0.3.0
+
+The easy way in: `protium runtime install` is the whole of getting Wine.
+
+### New
+
+* **`protium runtime install` sets up Rosetta 2 as well.** protium's Wine is
+  x86-64, because D3DMetal is, so it checks for Rosetta before downloading
+  anything and, if it is missing, runs Apple's `softwareupdate
+  --install-rosetta` in your terminal, where Apple asks you to accept its
+  licence. protium never accepts it for you. `protium prefix new` checks too,
+  before it boots a prefix, rather than failing inside Wine.
+* **`--yes` (`-y`) answers a command's question,** on `prefix new`, `prefix
+  remove`, `prefix migrate-user` and `install clean`. Every check still runs.
+  `--force` (`-f`) now only means redo or do it harder: `install`, `d3dmetal
+  install` and `prefix stop`.
+* **Short options:** `-y`, `-f`, `-p <prefix>` and `-r <runtime>`.
+* **`protium doctor` checks what running protium's Wine needs** — Apple
+  silicon and Rosetta. **`protium doctor build`** checks what `protium build`
+  needs, which is Xcode's command line tools: the build fetches its own bison
+  and llvm-mingw.
+* **`protium status` and `runtime install` say where Apple's download goes:**
+  the Game Porting Toolkit's `.dmg` in `~/Downloads`, or any path given to
+  `protium d3dmetal install`. On a release build, `status` suggests
+  `protium runtime install` rather than `protium build`.
+
+### Changed
+
+* **`--force` on `prefix new`, `prefix remove`, `prefix migrate-user` and
+  `install clean` still answers the question, with a note to use `--yes`.** It
+  will stop doing so in a later release.
+* **An option a command does not take is an error,** where it used to be
+  ignored, and so is an unknown one starting with a single dash: `prefix
+  remove games -x` no longer reads `-x` as a name.
+* **`protium doctor` no longer looks for bison, flex and llvm-mingw on your
+  `PATH`.** Nothing used them: `protium build` fetches its own.
+
 ## v0.2.0
 
 The first release that carries Wine itself.

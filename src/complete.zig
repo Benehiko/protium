@@ -22,9 +22,13 @@ pub const commands = [_][]const u8{
 };
 pub const prefix_subcommands = [_][]const u8{ "list", "new", "stop", "remove", "migrate-user" };
 pub const d3dmetal_subcommands = [_][]const u8{ "install", "check" };
+pub const doctor_subcommands = [_][]const u8{"build"};
+pub const runtime_subcommands = [_][]const u8{"install"};
 /// What `protium install` takes besides a catalogue name.
 pub const install_specials = [_][]const u8{ "list", "clean" };
-pub const options = [_][]const u8{ "--prefix", "--runtime", "--shell", "--force", "--refresh", "--undo" };
+/// Only the long spellings: Tab after `-` is someone looking for the list,
+/// and the short ones are for people who already know it.
+pub const options = [_][]const u8{ "--prefix", "--runtime", "--shell", "--yes", "--force", "--refresh", "--undo" };
 pub const shells = [_][]const u8{ "bash", "zsh", "fish" };
 
 /// What the word being completed should be drawn from.
@@ -35,6 +39,8 @@ pub const Kind = enum {
     install_names,
     prefix_subcommands,
     d3dmetal_subcommands,
+    doctor_subcommands,
+    runtime_subcommands,
     prefix_names,
     runtime_names,
     programs,
@@ -47,7 +53,20 @@ fn eql(a: []const u8, b: []const u8) bool {
 
 /// The options that are followed by a value.
 fn takesValue(arg: []const u8) bool {
-    return eql(arg, "--prefix") or eql(arg, "--runtime") or eql(arg, "--shell");
+    return isPrefixFlag(arg) or isRuntimeFlag(arg) or eql(arg, "--shell");
+}
+
+fn isPrefixFlag(arg: []const u8) bool {
+    return eql(arg, "--prefix") or eql(arg, "-p");
+}
+
+fn isRuntimeFlag(arg: []const u8) bool {
+    return eql(arg, "--runtime") or eql(arg, "-r");
+}
+
+/// An option, long or short, as protium's own parser reads one.
+fn isOption(arg: []const u8) bool {
+    return arg.len > 1 and arg[0] == '-';
 }
 
 /// What to complete, given the words after `protium` up to and including the
@@ -67,7 +86,7 @@ pub fn kindAt(words: []const []const u8) Kind {
             i += 1;
             continue;
         }
-        if (std.mem.startsWith(u8, a, "--")) continue;
+        if (isOption(a)) continue;
         if (npos < pos.len) pos[npos] = a;
         npos += 1;
     }
@@ -78,11 +97,11 @@ pub fn kindAt(words: []const []const u8) Kind {
 
     if (before.len > 0) {
         const prev = before[before.len - 1];
-        if (eql(prev, "--prefix")) return .prefix_names;
-        if (eql(prev, "--runtime")) return .runtime_names;
+        if (isPrefixFlag(prev)) return .prefix_names;
+        if (isRuntimeFlag(prev)) return .runtime_names;
         if (eql(prev, "--shell")) return .shells;
     }
-    if (std.mem.startsWith(u8, cur, "--")) return .options;
+    if (std.mem.startsWith(u8, cur, "-")) return .options;
     if (npos == 0) return .commands;
 
     const cmd = pos[0];
@@ -91,6 +110,8 @@ pub fn kindAt(words: []const []const u8) Kind {
     if (eql(cmd, "use")) return if (npos == 1) .prefix_names else .none;
     if (eql(cmd, "completion")) return if (npos == 1) .shells else .none;
     if (eql(cmd, "d3dmetal")) return if (npos == 1) .d3dmetal_subcommands else .none;
+    if (eql(cmd, "doctor")) return if (npos == 1) .doctor_subcommands else .none;
+    if (eql(cmd, "runtime")) return if (npos == 1) .runtime_subcommands else .none;
     if (eql(cmd, "prefix")) {
         if (npos == 1) return .prefix_subcommands;
         if (npos == 2 and (eql(pos[1], "stop") or eql(pos[1], "remove"))) return .prefix_names;
@@ -391,6 +412,21 @@ test "prefix subcommands, and the ones that name a prefix" {
     try testing.expectEqual(Kind.none, kind(&.{ "prefix", "new", "" }));
     try testing.expectEqual(Kind.prefix_names, kind(&.{ "use", "" }));
     try testing.expectEqual(Kind.shells, kind(&.{ "completion", "" }));
+}
+
+test "short options are options, and -p and -r take a name" {
+    try testing.expectEqual(Kind.options, kind(&.{"-"}));
+    try testing.expectEqual(Kind.prefix_names, kind(&.{ "run", "-p", "" }));
+    try testing.expectEqual(Kind.runtime_names, kind(&.{ "d3dmetal", "install", "-r", "" }));
+    // `-y` is a flag, not the prefix's name.
+    try testing.expectEqual(Kind.prefix_names, kind(&.{ "prefix", "remove", "-y", "" }));
+    try testing.expectEqual(Kind.programs, kind(&.{ "run", "-p", "games", "el" }));
+}
+
+test "doctor and runtime complete their subcommands" {
+    try testing.expectEqual(Kind.doctor_subcommands, kind(&.{ "doctor", "" }));
+    try testing.expectEqual(Kind.none, kind(&.{ "doctor", "build", "" }));
+    try testing.expectEqual(Kind.runtime_subcommands, kind(&.{ "runtime", "" }));
 }
 
 test "d3dmetal completes its subcommands, once" {
