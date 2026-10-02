@@ -5,11 +5,10 @@
 //! passes while testing less than it did. Watch the test *count*, not only the
 //! exit status.
 
-pub const semver = @import("semver.zig");
 pub const macho = @import("macho.zig");
 pub const plist = @import("plist.zig");
 pub const d3dmetal = @import("d3dmetal.zig");
-pub const toolchain = @import("toolchain.zig");
+pub const cli = @import("cli.zig");
 pub const doctor = @import("doctor.zig");
 pub const layout = @import("layout.zig");
 pub const env = @import("env.zig");
@@ -26,11 +25,10 @@ pub const complete = @import("complete.zig");
 pub const steamapp = @import("steamapp.zig");
 
 test {
-    _ = semver;
     _ = macho;
     _ = plist;
     _ = d3dmetal;
-    _ = toolchain;
+    _ = cli;
     _ = doctor;
     _ = layout;
     _ = env;

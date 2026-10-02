@@ -12,7 +12,6 @@ const builtin = @import("builtin");
 const Io = std.Io;
 
 const doctor = @import("doctor.zig");
-const toolchain = @import("toolchain.zig");
 const d3dmetal = @import("d3dmetal.zig");
 const macho = @import("macho.zig");
 const plist = @import("plist.zig");
@@ -51,14 +50,14 @@ comptime {
 const rosetta_marker = "/Library/Apple/usr/libexec/oah";
 
 const usage =
-    \\protium — run Windows games on macOS with a Wine you built and Apple's D3DMetal
+    \\protium — run Windows games on macOS with Wine and Apple's D3DMetal
     \\
     \\Setting up:
-    \\  protium doctor              Check this host against what building Wine needs.
-    \\  protium build               Build Wine from CodeWeavers' sources and install it.
     \\  protium runtime install [<archive>]
-    \\                              Or install the Wine this release was built with,
-    \\                              downloaded, or from an archive already here.
+    \\                              Install the Wine this release was built with,
+    \\                              downloaded, or from an archive already here,
+    \\                              and Rosetta 2 if this Mac lacks it.
+    \\  protium doctor              Check this Mac can run protium's Wine.
     \\  protium status              Where the installation is, and the next step.
     \\  protium shell-init          Print the line that makes prefixes automatic.
     \\  protium completion <shell>  Print tab-completion for bash, zsh or fish.
@@ -93,25 +92,32 @@ const usage =
     \\      Without <path>, which D3DMetal the runtime has. With one, what
     \\      Apple's download holds: its version, architecture and shims.
     \\
+    \\Building Wine yourself, instead of `protium runtime install`:
+    \\  protium doctor build        Check this Mac has what building Wine needs.
+    \\  protium build               Build Wine from CodeWeavers' sources and install it.
+    \\
     \\  protium version
     \\
     \\Options, where they apply:
-    \\  --prefix <name>   Use this prefix instead of the default.
-    \\  --runtime <name>  Use this Wine instead of the default.
-    \\  --shell <name>    fish, zsh, bash or posix. Defaults to $SHELL.
-    \\  --force           install: run the installer even if it is already there.
-    \\                    prefix new: answer the offer to install or build Wine
-    \\                    with yes.
-    \\                    prefix stop: skip the polite request and signal at once.
-    \\                    prefix remove, install clean: delete without asking
-    \\                    first. It never deletes anything the question would
-    \\                    not have offered to.
-    \\  --refresh         install: download again rather than reusing the copy.
-    \\  --undo            install: put back the program's own file protium replaced.
+    \\  -p, --prefix <name>   Use this prefix instead of the default.
+    \\  -r, --runtime <name>  Use this Wine instead of the default.
+    \\  --shell <name>        fish, zsh, bash or posix. Defaults to $SHELL.
+    \\  -y, --yes             Answer the command's question with yes:
+    \\                        prefix new: install (or build) Wine if there is none.
+    \\                        prefix remove, install clean: delete without asking.
+    \\                        prefix migrate-user: migrate without asking.
+    \\                        Every check still runs, and a licence Apple asks
+    \\                        you to accept is still yours to answer.
+    \\  -f, --force           Redo, or do it harder:
+    \\                        install: run the installer even if it is there.
+    \\                        d3dmetal install: install the same version again.
+    \\                        prefix stop: skip the polite request, signal at once.
+    \\  --refresh             install: download again rather than reusing the copy.
+    \\  --undo                install: put back the program's own file protium replaced.
     \\
-    \\The Wine is built from CodeWeavers' published sources, on this Mac by
-    \\`protium build` (docs/wine-build.md) or by this release's own workflow
-    \\for `protium runtime install`. D3DMetal is never shipped here: it comes
+    \\The Wine is built from CodeWeavers' published sources, by this release's
+    \\own workflow for `protium runtime install`, or on this Mac by
+    \\`protium build` (docs/wine-build.md). D3DMetal is never shipped here: it comes
     \\from Apple's Game Porting Toolkit (docs/d3dmetal.md).
     \\
 ;
@@ -144,7 +150,7 @@ fn dispatch(
     rest: []const []const u8,
     w: *Io.Writer,
 ) !u8 {
-    if (std.mem.eql(u8, cmd, "doctor")) return runDoctor(io, vars, w);
+    if (std.mem.eql(u8, cmd, "doctor")) return runDoctor(io, rest, w);
     if (std.mem.eql(u8, cmd, "build")) return runBuild(arena, io, vars, rest, w);
     if (std.mem.eql(u8, cmd, "runtime")) return runRuntime(arena, io, vars, rest, w);
     if (std.mem.eql(u8, cmd, "d3dmetal")) return runD3dmetal(arena, io, vars, rest, w);
@@ -177,83 +183,10 @@ fn dispatch(
 // ---------------------------------------------------------------------------
 // Arguments
 
-const Options = struct {
-    shell: ?[]const u8 = null,
-    prefix: ?[]const u8 = null,
-    runtime: ?[]const u8 = null,
-    /// `install`: run the installer even when the program is already there.
-    force: bool = false,
-    /// `install`: fetch the installer again rather than reusing the download.
-    refresh: bool = false,
-    /// `install`: put the program's own file back and remove protium's.
-    undo: bool = false,
-    /// Everything that was not a recognised option.
-    positional: []const []const u8 = &.{},
-    /// An option that was given without its value, or one this command does
-    /// not take. Reported rather than ignored: a mistyped `--prefx` that
-    /// silently launched the default prefix would be worse than an error.
-    bad: ?[]const u8 = null,
-};
-
-/// Parse leading options. When `stop_at_positional` is set, the first
-/// non-option argument ends protium's own parsing and everything after it is
-/// passed through untouched — a game's own `--fullscreen` is not protium's to
-/// interpret.
-fn parseOptions(
-    arena: std.mem.Allocator,
-    args: []const []const u8,
-    stop_at_positional: bool,
-) !Options {
-    var opts: Options = .{};
-    var positional: std.ArrayList([]const u8) = .empty;
-
-    var i: usize = 0;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
-        // Flags without a value, handled before the ones that take one so
-        // that `--force` is not read as `--force <next argument>`.
-        if (std.mem.eql(u8, arg, "--force")) {
-            opts.force = true;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--refresh")) {
-            opts.refresh = true;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--undo")) {
-            opts.undo = true;
-            continue;
-        }
-        const target: *?[]const u8 = if (std.mem.eql(u8, arg, "--shell"))
-            &opts.shell
-        else if (std.mem.eql(u8, arg, "--prefix"))
-            &opts.prefix
-        else if (std.mem.eql(u8, arg, "--runtime"))
-            &opts.runtime
-        else {
-            if (std.mem.startsWith(u8, arg, "--")) {
-                opts.bad = arg;
-                return opts;
-            }
-            try positional.append(arena, arg);
-            if (stop_at_positional) {
-                i += 1;
-                while (i < args.len) : (i += 1) try positional.append(arena, args[i]);
-                break;
-            }
-            continue;
-        };
-        i += 1;
-        if (i >= args.len) {
-            opts.bad = arg;
-            return opts;
-        }
-        target.* = args[i];
-    }
-
-    opts.positional = positional.items;
-    return opts;
-}
+const cli = @import("cli.zig");
+const Options = cli.Options;
+const parseOptions = cli.parse;
+const answeredYes = cli.answeredYes;
 
 fn reportBadOption(w: *Io.Writer, cmd: []const u8, bad: []const u8) !u8 {
     try w.print("protium {s}: {s} is not an option this command takes, or is missing its value\n", .{ cmd, bad });
@@ -346,7 +279,7 @@ fn runStatus(
     args: []const []const u8,
     w: *Io.Writer,
 ) !u8 {
-    const opts = try parseOptions(arena, args, false);
+    const opts = try parseOptions(arena, args, false, .{ .prefix = true, .runtime = true });
     if (opts.bad) |b| return reportBadOption(w, "status", b);
 
     const sess = session.Session.open(arena, io, vars) catch |err| switch (err) {
@@ -368,7 +301,9 @@ fn runStatus(
         break :blk null;
     };
 
-    const state = sess.observe(rt, rt_err, px, px_err);
+    var state = sess.observe(rt, rt_err, px, px_err);
+    state.rosetta = exists(io, rosetta_marker);
+    state.runtime_published = runtime_sha256.len != 0;
 
     try w.writeAll("protium status\n\n");
     try w.print("  root      {s}\n", .{sess.root});
@@ -433,7 +368,7 @@ fn runEnv(
     args: []const []const u8,
     w: *Io.Writer,
 ) !u8 {
-    const opts = try parseOptions(arena, args, false);
+    const opts = try parseOptions(arena, args, false, .{ .prefix = true, .runtime = true, .shell = true });
     if (opts.bad != null) {
         try shell.comment(w, "protium: unrecognised option; run `protium` for the list");
         return 0;
@@ -493,7 +428,7 @@ fn runUse(
     args: []const []const u8,
     w: *Io.Writer,
 ) !u8 {
-    const opts = try parseOptions(arena, args, false);
+    const opts = try parseOptions(arena, args, false, .{ .prefix = true, .runtime = true });
     if (opts.bad) |b| return reportBadOption(w, "use", b);
 
     const wanted_prefix = if (opts.positional.len > 0) opts.positional[0] else opts.prefix;
@@ -664,7 +599,7 @@ fn prefixNew(
     args: []const []const u8,
     w: *Io.Writer,
 ) !u8 {
-    const opts = try parseOptions(arena, args, false);
+    const opts = try parseOptions(arena, args, false, .{ .runtime = true, .yes = true, .force = true });
     if (opts.bad) |b| return reportBadOption(w, "prefix new", b);
     if (opts.positional.len == 0) {
         try w.writeAll("protium prefix new: name the prefix — `protium prefix new default`\n");
@@ -708,16 +643,20 @@ fn prefixNew(
             "There is no Wine under {s}/{s}, and a prefix cannot be created without one.\n\n",
             .{ sess.root, layout.runtimes },
         );
+        const yes = try answeredYes(w, opts);
         if (runtime_sha256.len != 0) {
-            if (try offerRuntimeInstall(arena, io, vars, sess, w, !opts.force) != 0) return 1;
+            if (try offerRuntimeInstall(arena, io, vars, sess, w, !yes) != 0) return 1;
         } else {
-            if (try buildWine(arena, io, vars, sess, w, !opts.force) != 0) return 1;
+            if (try buildWine(arena, io, vars, sess, w, !yes) != 0) return 1;
         }
         break :blk sess.runtime(opts.runtime) catch |again| {
             try reportUnresolved(sess, w, layout.runtimes, "runtime", opts.runtime, again);
             return 1;
         };
     };
+    // wineboot is x86-64 like the rest of the runtime. Without Rosetta it fails
+    // with an error that names neither Rosetta nor what to do about it.
+    if (!try ensureRosetta(io, vars, "protium prefix new", w)) return 1;
     const loader = try sess.join(&.{ rt.dir, layout.wine_loader });
     if (!sess.exists(loader)) {
         try w.print("protium: {s} has no {s}.\n", .{ rt.dir, layout.wine_loader });
@@ -811,7 +750,7 @@ fn prefixStop(
     args: []const []const u8,
     w: *Io.Writer,
 ) !u8 {
-    var opts = try parseOptions(arena, args, false);
+    var opts = try parseOptions(arena, args, false, .{ .prefix = true, .runtime = true, .force = true });
     if (opts.bad) |b| return reportBadOption(w, "prefix stop", b);
     // `prefix stop eldenring` and `prefix stop --prefix eldenring` are the
     // same request; `prefix new` takes its name positionally, so this does.
@@ -1118,7 +1057,7 @@ const poll_step_ms = 50;
 ///     half-removed tree and a process still writing into it;
 ///   * the tree is measured and described before anything goes.
 ///
-/// `--force` answers the question, and only the question.
+/// `--yes` answers the question, and only the question.
 fn prefixRemove(
     arena: std.mem.Allocator,
     io: Io,
@@ -1126,7 +1065,7 @@ fn prefixRemove(
     args: []const []const u8,
     w: *Io.Writer,
 ) !u8 {
-    const opts = try parseOptions(arena, args, false);
+    const opts = try parseOptions(arena, args, false, .{ .yes = true, .force = true });
     if (opts.bad) |b| return reportBadOption(w, "prefix remove", b);
     if (opts.positional.len == 0) {
         // Deliberately not the default prefix. Every other command falls back
@@ -1177,7 +1116,7 @@ fn prefixRemove(
     // A running prefix is refused rather than stopped. Stopping one means
     // signalling processes, and a command that both signals and deletes is
     // one whose failure modes cannot be reasoned about from its name. The
-    // command that does it is named instead — `--force` does not change this.
+    // command that does it is named instead — `--yes` does not change this.
     const server_pid = try findServer(arena, dir, w);
     const running = try prefixProcesses(arena, dir, server_pid);
     if (server_pid != null or running.len > 0) {
@@ -1207,10 +1146,10 @@ fn prefixRemove(
     const what = std.fmt.bufPrint(&what_buf, "the prefix {s}", .{name}) catch "the prefix";
     if (try describeTree(w, what, dir, m) != 0) return 1;
 
-    if (!opts.force) {
+    if (!try answeredYes(w, opts)) {
         var question: [256]u8 = undefined;
         const prompt = std.fmt.bufPrint(&question, "Delete the prefix {s}?", .{name}) catch "Delete it?";
-        if (!try confirm(io, w, prompt, "Pass --force to delete without the question.")) {
+        if (!try confirm(io, w, prompt, "Pass --yes (-y) to delete without the question.")) {
             try w.writeAll("Nothing was deleted.\n");
             return 1;
         }
@@ -1258,7 +1197,7 @@ fn prefixMigrateUser(
     args: []const []const u8,
     w: *Io.Writer,
 ) !u8 {
-    var opts = try parseOptions(arena, args, false);
+    var opts = try parseOptions(arena, args, false, .{ .prefix = true, .yes = true, .force = true });
     if (opts.bad) |b| return reportBadOption(w, "prefix migrate-user", b);
     if (opts.positional.len > 0) opts.prefix = opts.positional[0];
 
@@ -1312,8 +1251,8 @@ fn prefixMigrateUser(
     try w.print("\nSteam's sign-in and its CEF cache live under {s}/AppData/Local/Steam,\n", .{profile.legacy_dir});
     try w.writeAll("and move with the profile.\n\n");
 
-    if (!opts.force) {
-        if (!try confirm(io, w, "Migrate this prefix?", "Pass --force to migrate without the question.")) {
+    if (!try answeredYes(w, opts)) {
+        if (!try confirm(io, w, "Migrate this prefix?", "Pass --yes (-y) to migrate without the question.")) {
             try w.writeAll("Nothing was changed.\n");
             return 1;
         }
@@ -1530,13 +1469,13 @@ fn describeTree(w: *Io.Writer, what: []const u8, dir: []const u8, m: Measure) !u
 
 /// Ask before doing something that cannot be taken back cheaply.
 ///
-/// Only `--force` skips this. A pipe with nothing behind it is refused rather
+/// Only `--yes` skips this. A pipe with nothing behind it is refused rather
 /// than answered, because the alternative — reading end-of-input as `no` — is
 /// indistinguishable from a script that meant to say `yes` and forgot the
 /// flag, and one of those two readings deletes a prefix.
 ///
 /// `hint` is what to say to whoever is on the other end of that pipe. It
-/// differs by question: `--force` deletes without asking in one place and
+/// differs by question: `--yes` deletes without asking in one place and
 /// starts a six-minute build in another, and a message that says "delete"
 /// where nothing is deleted is worse than no message.
 fn confirm(io: Io, w: *Io.Writer, prompt: []const u8, hint: []const u8) !bool {
@@ -1687,7 +1626,7 @@ fn runLaunch(
     args: []const []const u8,
     w: *Io.Writer,
 ) !u8 {
-    const opts = try parseOptions(arena, args, true);
+    const opts = try parseOptions(arena, args, true, .{ .prefix = true, .runtime = true });
     if (opts.bad) |b| return reportBadOption(w, "run", b);
     if (opts.positional.len == 0) {
         try w.writeAll("protium run: name something to run — `protium run ~/Games/Setup.exe`\n");
@@ -1925,6 +1864,8 @@ fn completeInto(
         .options => try complete.emit(w, &complete.options, cur),
         .prefix_subcommands => try complete.emit(w, &complete.prefix_subcommands, cur),
         .d3dmetal_subcommands => try complete.emit(w, &complete.d3dmetal_subcommands, cur),
+        .doctor_subcommands => try complete.emit(w, &complete.doctor_subcommands, cur),
+        .runtime_subcommands => try complete.emit(w, &complete.runtime_subcommands, cur),
         .shells => try complete.emit(w, &complete.shells, cur),
         .install_names => {
             var all: std.ArrayList([]const u8) = .empty;
@@ -2026,7 +1967,7 @@ fn runBuild(
     args: []const []const u8,
     w: *Io.Writer,
 ) !u8 {
-    const opts = try parseOptions(arena, args, false);
+    const opts = try parseOptions(arena, args, false, .{});
     if (opts.bad) |b| return reportBadOption(w, "build", b);
 
     const sess = session.Session.open(arena, io, vars) catch |err| switch (err) {
@@ -2052,7 +1993,7 @@ fn runRuntime(
         try w.writeAll("protium runtime: the subcommand is install — `protium runtime install [<archive>]`\n");
         return 2;
     }
-    const opts = try parseOptions(arena, args[1..], false);
+    const opts = try parseOptions(arena, args[1..], false, .{});
     if (opts.bad) |b| return reportBadOption(w, "runtime install", b);
     if (opts.positional.len > 1) {
         try w.writeAll("protium runtime install: give at most one archive\n");
@@ -2072,7 +2013,7 @@ fn runRuntime(
 
 /// What `prefix new` offers when no runtime is installed and this protium was
 /// released with one: that runtime, which installs in seconds, rather than
-/// the build. `ask` puts the question first; `--force` answers it.
+/// the build. `ask` puts the question first; `--yes` answers it.
 fn offerRuntimeInstall(
     arena: std.mem.Allocator,
     io: Io,
@@ -2090,7 +2031,7 @@ fn offerRuntimeInstall(
         \\
     , .{recipe.runtime_name});
     if (ask) {
-        if (!try confirm(io, w, "Install it now?", "Pass --force to install without the question, or run `protium runtime install`.")) {
+        if (!try confirm(io, w, "Install it now?", "Pass --yes (-y) to install without the question, or run `protium runtime install`.")) {
             try w.writeAll("\nNothing was downloaded. `protium runtime install` does it whenever you like.\n");
             return 1;
         }
@@ -2127,6 +2068,13 @@ fn installRuntime(
     if (!layout.rootIsUsable(sess.root)) {
         try w.print("protium: {s} contains a space, which Wine's own tooling cannot handle.\n", .{sess.root});
         try w.writeAll("Set PROTIUM_HOME to a path without one.\n");
+        return 1;
+    }
+
+    // Before the download: without Rosetta the runtime cannot run, and finding
+    // that out after 330 MB is worse than finding it out first.
+    if (!try ensureRosetta(io, vars, "protium runtime install", w)) {
+        try w.writeAll("Nothing was downloaded.\n");
         return 1;
     }
 
@@ -2216,30 +2164,27 @@ fn installRuntime(
     try w.writeAll(
         \\
         \\It has no D3DMetal, so it runs Windows programs but not Direct3D games.
-        \\Apple's half comes from the Game Porting Toolkit DMG (docs/d3dmetal.md), and
-        \\this installs it:
+        \\Apple's half comes from the Game Porting Toolkit, which needs a free Apple
+        \\developer account to download (docs/d3dmetal.md):
         \\
+        \\  https://developer.apple.com/games/game-porting-toolkit/
+        \\
+        \\Save the Game_Porting_Toolkit_*.dmg in ~/Downloads, where a browser puts it,
+        \\and run:
+        \\
+        \\  protium d3dmetal install
+        \\
+        \\Saved somewhere else, give its path instead:
+        \\
+        \\  protium d3dmetal install ~/Desktop/Game_Porting_Toolkit_4.0_beta_2.dmg
         \\
     );
-    try w.writeAll("  protium d3dmetal install\n");
     return 0;
 }
 
-/// The programs the build shells out to. All of them come with Xcode's command
-/// line tools, and all of them are named by absolute path: llvm-mingw's `bin/`
-/// goes on `PATH` ahead of everything else while the build runs, and the
-/// `clang` in it targets Windows.
-const host_tools = [_][]const u8{
-    "/usr/bin/clang",
-    "/usr/bin/make",
-    "/usr/bin/tar",
-    "/usr/bin/patch",
-    "/usr/bin/install_name_tool",
-    "/usr/bin/touch",
-    "/usr/bin/cmp",
-    // GMP's and Nettle's builds generate assembly with it.
-    "/usr/bin/m4",
-};
+/// The programs the build shells out to: `doctor.build_tools`, which
+/// `protium doctor build` checks too.
+const host_tools = doctor.build_tools;
 
 /// Build Wine from CodeWeavers' published sources and install it as a runtime.
 ///
@@ -2278,7 +2223,7 @@ fn buildWine(
 
     try describeBuild(w, paths);
     if (ask) {
-        if (!try confirm(io, w, "Build it now?", "Pass --force to build without the question, or run `protium build`.")) {
+        if (!try confirm(io, w, "Build it now?", "Pass --yes (-y) to build without the question, or run `protium build`.")) {
             try w.writeAll("\nNothing was fetched. `protium build` starts it whenever you like.\n");
             return 1;
         }
@@ -2892,7 +2837,7 @@ fn runInstall(
     args: []const []const u8,
     w: *Io.Writer,
 ) !u8 {
-    const opts = try parseOptions(arena, args, false);
+    const opts = try parseOptions(arena, args, false, .{ .prefix = true, .runtime = true, .force = true, .refresh = true, .undo = true, .yes = true });
     if (opts.bad) |b| return reportBadOption(w, "install", b);
     if (opts.positional.len == 0) {
         try w.writeAll("protium install: name something — `protium install steam`\n");
@@ -3284,7 +3229,7 @@ fn installClean(
     try w.writeAll("Every installer in it is the publisher's own, and `protium install`\n");
     try w.writeAll("downloads what it needs again.\n\n");
 
-    if (!opts.force and !try confirm(io, w, "Delete the downloaded installers?", "Pass --force to delete without the question.")) {
+    if (!try answeredYes(w, opts) and !try confirm(io, w, "Delete the downloaded installers?", "Pass --yes (-y) to delete without the question.")) {
         try w.writeAll("Nothing was deleted.\n");
         return 1;
     }
@@ -3551,36 +3496,101 @@ fn runShellInit(vars: *std.process.Environ.Map, args: []const []const u8, w: *Io
 // ---------------------------------------------------------------------------
 // doctor and d3dmetal
 
-/// The host report. Returns 0 when everything is satisfied, so a script can
-/// gate on this command without reading its output.
-fn runDoctor(io: Io, vars: *const std.process.Environ.Map, w: *Io.Writer) !u8 {
-    var findings: [2 + toolchain.requirements.len]doctor.Finding = undefined;
-    var where: [toolchain.requirements.len]?[]const u8 = @splat(null);
-    var bufs: [toolchain.requirements.len][std.fs.max_path_bytes]u8 = undefined;
-
-    findings[0] = doctor.archFinding(builtin.cpu.arch);
-    findings[1] = doctor.rosettaFinding(exists(io, rosetta_marker));
-
-    const path_var = vars.get("PATH") orelse "";
-    for (toolchain.requirements, 0..) |req, n| {
-        where[n] = searchPath(io, path_var, req.program, &bufs[n]);
-        findings[2 + n] = doctor.toolFinding(req, toolchain.evaluate(req, where[n]));
+/// The host report: `protium doctor` for what running protium's Wine needs,
+/// `protium doctor build` for what building it needs. Returns 0 when
+/// everything checked is satisfied, so a script can gate on it without
+/// reading its output.
+fn runDoctor(io: Io, args: []const []const u8, w: *Io.Writer) !u8 {
+    const build = args.len > 0 and std.mem.eql(u8, args[0], "build");
+    if (args.len > @intFromBool(build)) {
+        try w.print("protium doctor: {s} is not something doctor checks — `protium doctor` or `protium doctor build`\n", .{args[@intFromBool(build)]});
+        return 2;
     }
 
-    try w.writeAll("protium doctor\n\n");
-    for (findings, 0..) |f, n| {
-        try w.print("  [{s}] {s}\n        {s}\n", .{ if (f.ok) "ok" else "--", f.label, f.detail });
-        if (n >= 2) {
-            if (where[n - 2]) |p| try w.print("        found at {s}\n", .{p});
+    var missing_tool: ?[]const u8 = null;
+    for (doctor.build_tools) |t| {
+        if (!exists(io, t)) {
+            missing_tool = t;
+            break;
         }
+    }
+    const findings = [2]doctor.Finding{
+        doctor.archFinding(builtin.cpu.arch),
+        if (build) doctor.xcodeFinding(missing_tool) else doctor.rosettaFinding(exists(io, rosetta_marker)),
+    };
+
+    try w.writeAll(if (build) "protium doctor build\n\n" else "protium doctor\n\n");
+    for (findings) |f| {
+        try w.print("  [{s}] {s}\n        {s}\n", .{ if (f.ok) "ok" else "--", f.label, f.detail });
     }
 
     const ok = doctor.allOk(&findings);
-    try w.writeAll(if (ok)
-        "\nThis host can build the Wine half. See docs/wine-build.md.\n"
-    else
-        "\nSomething above is missing. docs/wine-build.md says where each piece comes from,\nand fetches all of them into a scratch directory rather than installing on the host.\n");
+    if (!ok) {
+        try w.writeAll("\nSomething above is missing; each line says how to get it.\n");
+    } else if (build) {
+        try w.writeAll("\nThis Mac can build Wine:\n\n  protium build\n\nIt fetches its sources, bison and llvm-mingw into protium's build directory.\n");
+    } else if (runtime_sha256.len != 0) {
+        try w.writeAll("\nThis Mac can run protium's Wine. Install the one this release was built with:\n\n  protium runtime install\n");
+    } else {
+        try w.writeAll(
+            \\
+            \\This Mac can run protium's Wine. This protium is a development build and
+            \\has no published runtime to install, so build one: `protium doctor build`
+            \\checks what that needs, and `protium build` does it.
+            \\
+        );
+    }
     return if (ok) 0 else 1;
+}
+
+/// Rosetta 2's own install command, for whoever has to run it by hand.
+const rosetta_by_hand =
+    \\Install it yourself, then run this again:
+    \\
+    \\  softwareupdate --install-rosetta
+    \\
+    \\If that says it needs an administrator, put `sudo ` in front of it.
+    \\
+;
+
+/// Make sure Rosetta 2 is installed, installing it when it is not.
+///
+/// protium's Wine is x86-64, because D3DMetal is, so nothing in a runtime
+/// runs without Rosetta. Apple's `softwareupdate` installs it, and asks for
+/// its licence to be accepted in the terminal it inherits. protium does not
+/// pass `--agree-to-license`: that licence is the person's to accept, and
+/// `--yes` answers protium's questions, not Apple's. With nobody at a terminal
+/// to answer, it says what to run instead.
+fn ensureRosetta(io: Io, vars: *std.process.Environ.Map, who: []const u8, w: *Io.Writer) !bool {
+    if (exists(io, rosetta_marker)) return true;
+    try w.print(
+        \\{s}: Rosetta 2 is not installed. protium's Wine is x86-64, because
+        \\D3DMetal is, and nothing in it runs without Rosetta.
+        \\
+        \\
+    , .{who});
+    if (!(Io.File.stdin().isTty(io) catch false)) {
+        try w.writeAll("There is nobody at a terminal to accept Apple's licence for it.\n");
+        try w.writeAll(rosetta_by_hand);
+        return false;
+    }
+    try w.writeAll(
+        \\Installing it with Apple's softwareupdate, which asks you to accept Apple's
+        \\licence:
+        \\
+        \\  softwareupdate --install-rosetta
+        \\
+        \\
+    );
+    try w.flush();
+    const code = spawnAt(io, vars, .inherit, &.{ "/usr/sbin/softwareupdate", "--install-rosetta" }) catch 1;
+    if (code == 0 and exists(io, rosetta_marker)) {
+        try w.writeAll("\nRosetta 2 is installed.\n\n");
+        return true;
+    }
+    try w.writeAll("\nRosetta 2 was not installed.\n");
+    try w.writeAll(rosetta_by_hand);
+    return false;
 }
 
 /// `protium d3dmetal install [<path>]` and `protium d3dmetal check [<path>]`.
@@ -3598,7 +3608,7 @@ fn runD3dmetal(
         return 2;
     }
     const name = if (install) "d3dmetal install" else "d3dmetal check";
-    const opts = try parseOptions(arena, args[1..], false);
+    const opts = try parseOptions(arena, args[1..], false, .{ .runtime = true, .force = true });
     if (opts.bad) |b| return reportBadOption(w, name, b);
     if (opts.positional.len > 1) {
         try w.print("protium {s}: give at most one path\n", .{name});
@@ -3998,16 +4008,4 @@ fn names(arena: std.mem.Allocator, io: Io, dir: Io.Dir, sub: []const u8) ![]cons
 fn exists(io: Io, path: []const u8) bool {
     Io.Dir.cwd().access(io, path, .{}) catch return false;
     return true;
-}
-
-/// The first directory on `path_var` holding an executable named `program`.
-fn searchPath(io: Io, path_var: []const u8, program: []const u8, buf: []u8) ?[]const u8 {
-    var dirs = std.mem.splitScalar(u8, path_var, ':');
-    while (dirs.next()) |dir| {
-        if (dir.len == 0) continue;
-        const full = std.fmt.bufPrint(buf, "{s}/{s}", .{ dir, program }) catch continue;
-        Io.Dir.cwd().access(io, full, .{}) catch continue;
-        return full;
-    }
-    return null;
 }
