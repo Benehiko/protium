@@ -18,19 +18,19 @@ protium runs single-player games. Anti-cheat does not work.
 
 ## Quickstart
 
-### 1. Get the prerequisites
+### 1. What you need
 
-* **Rosetta 2.** D3DMetal is x86-64 only, so the Wine is too
-  ([why](docs/d3dmetal.md)). Install it with
-  `softwareupdate --install-rosetta --agree-to-license`.
-* **The Wine build tools**, listed in
-  [docs/wine-build.md](docs/wine-build.md#toolchain). They go into a scratch
-  directory, not onto your Mac.
-* **Apple's Evaluation environment for Windows games**, inside the
+* **An Apple silicon Mac.** protium's Wine loads on macOS 15 and later, and
+  Apple's D3DMetal 4.0b2 needs macOS 26.4 or later.
+* **Apple's Game Porting Toolkit.** Download the
   [Game Porting Toolkit](https://developer.apple.com/games/game-porting-toolkit/)
-  DMG. Downloading it requires an Apple developer account. protium does not
-  redistribute it. [docs/d3dmetal.md](docs/d3dmetal.md) gives the URL we
-  tested and why it may not work for you.
+  DMG, which needs a free Apple developer account, and leave it in
+  `~/Downloads`, where your browser saves it. protium looks for it there.
+  protium does not redistribute it. [docs/d3dmetal.md](docs/d3dmetal.md) gives
+  the URL we tested and why it may not work for you.
+
+That is all. Rosetta 2 is installed by protium in step 3 if your Mac lacks it,
+and Wine comes ready-built from this project's releases.
 
 ### 2. Install protium
 
@@ -51,32 +51,45 @@ the signature with cosign before you run anything. Files downloaded with
 `curl` skip macOS quarantine. If you download with a browser, the release notes
 also explain how to clear it.
 
-### 3. Build the environment
+### 3. Set up Wine and D3DMetal
 
 ```sh
-protium doctor               # check the prerequisites
-protium runtime install      # install the Wine this release was built with
-protium d3dmetal install     # install Apple's D3DMetal from the toolkit DMG in ~/Downloads
+protium runtime install      # Wine from this release, and Rosetta 2 if your Mac lacks it
+protium d3dmetal install     # Apple's D3DMetal, from the toolkit DMG in ~/Downloads
 protium prefix new default   # create a Windows prefix
 protium shell-init           # print a line to add to your shell's rc file
 ```
 
 Run `protium status` at any point to see where you are and what comes next.
+`protium doctor` checks that your Mac can run protium's Wine.
 
-`protium d3dmetal install` takes the toolkit's `.dmg`, the evaluation
-environment inside it, either one mounted, or its `redist/lib` folder; without
-a path it uses the `Game_Porting_Toolkit_*.dmg` in `~/Downloads`. It opens a
-disk image in your terminal, where `hdiutil` asks you to accept Apple's
-licence, checks the payload, and merges it into the runtime, keeping Wine's own
-Direct3D modules aside. `protium d3dmetal check` reports which D3DMetal the
-runtime has, or, given a path, what Apple's download holds.
-
-`protium runtime install` downloads the Wine runtime that this release of
+**`protium runtime install`** downloads the Wine runtime that this release of
 protium was built with, and installs it only if its SHA-256 matches the one
 compiled into protium, which the release's signature covers. Because protium
-downloads it rather than a browser, macOS does not quarantine it. To build the
-same Wine on your Mac instead, run `protium build` in its place: it is
-unattended, and takes about 10 minutes on an M4.
+downloads it rather than a browser, macOS does not quarantine it. Wine here is
+x86-64, because D3DMetal is ([why](docs/d3dmetal.md)), so it needs Rosetta 2.
+If your Mac lacks it, protium runs Apple's `softwareupdate --install-rosetta`
+before downloading anything, and Apple asks you to accept its licence in your
+terminal.
+
+**`protium d3dmetal install`** finds the `Game_Porting_Toolkit_*.dmg` in
+`~/Downloads`. Saved somewhere else? Give its path:
+
+```sh
+protium d3dmetal install ~/Desktop/Game_Porting_Toolkit_4.0_beta_2.dmg
+```
+
+It also takes the evaluation environment inside the toolkit, either one
+mounted, or its `redist/lib` folder. It opens a disk image in your terminal,
+where `hdiutil` asks you to accept Apple's licence, checks the payload, and
+merges it into the runtime, keeping Wine's own Direct3D modules aside.
+`protium d3dmetal check` reports which D3DMetal the runtime has, or, given a
+path, what Apple's download holds.
+
+**`protium prefix new`** offers to run `protium runtime install` if you skipped
+it; `-y` (`--yes`) answers that question in advance. It answers only protium's
+question: the SHA-256 check still runs, and Apple's licences are still yours to
+accept.
 
 Downloaded the runtime archive from the releases page yourself, for a Mac
 without a network connection, say? Give `protium runtime install` its path:
@@ -90,10 +103,9 @@ Do not unpack the archive in Finder and copy the folder into place: that skips
 the check, and Archive Utility passes the download's quarantine on to every
 file it extracts.
 
-`protium build` follows [docs/wine-build.md](docs/wine-build.md). It builds the
-x86-64 FreeType, GnuTLS and the libraries GnuTLS needs from pinned sources when
-they are missing. The document explains each step and the three mistakes that
-each cost an hour to find.
+Would you rather build Wine on your own Mac? See
+[Build Wine yourself](docs/wine-build.md#build-wine-yourself): it needs Xcode's
+command line tools and about 10 minutes on an M4, and produces the same runtime.
 
 ### 4. Install and start Steam
 

@@ -80,7 +80,7 @@ Any directory on your `PATH` will do in place of `/usr/local/bin`; without
 Then let protium tell you what is left to do:
 
 ```sh
-protium runtime install   # the Wine this release was built with
+protium runtime install   # the Wine this release was built with, and Rosetta 2
 protium d3dmetal install  # Apple's D3DMetal, from the toolkit DMG in ~/Downloads
 protium status            # where the installation is, and the next step
 ```
@@ -90,7 +90,7 @@ the evaluation environment inside it, either one mounted, or its `redist/lib`
 folder. It opens a disk image in your terminal, where `hdiutil` asks you to
 accept Apple's licence.
 
-To build the same Wine on your Mac instead, run `protium doctor` and then
+To build the same Wine on your Mac instead, run `protium doctor build` and then
 `protium build` in place of `protium runtime install`.
 
 If you downloaded the runtime archive from this page yourself, give its path:
