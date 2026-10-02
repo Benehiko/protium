@@ -1,7 +1,31 @@
 # Building the Wine half from source
 
+Most people do not need this document: `protium runtime install` installs the
+runtime each release's own workflow built from this same recipe (see the
+README's quickstart). This is for building it on your own Mac — to check the
+release's work, to change a patch, or to try other sources.
+
+## Build Wine yourself
+
+```sh
+protium doctor build         # Apple silicon, and Xcode's command line tools
+xcode-select --install       # only if doctor build says they are missing
+protium build                # fetch, build and install the runtime: ~10 minutes on an M4
+protium d3dmetal install     # Apple's D3DMetal, as in the quickstart
+protium prefix new default
+```
+
+`protium build` builds the CrossOver sources this protium pins, which are the
+ones the release's runtime was built from, so it produces the same runtime
+`protium runtime install` would. Building newer sources means changing the
+pins in `src/recipe.zig`; the rest of this document is what that takes. If
+Rosetta 2 is missing, `protium prefix new` installs it, as `protium runtime
+install` would have.
+
+## The recipe
+
 What the recipe needs is an Apple silicon Mac with Xcode's command line tools;
-`protium doctor` checks a host against the list. **Nothing is installed on the
+`protium doctor build` checks a host against the list. **Nothing is installed on the
 host** — every build tool and every runtime dependency is fetched into a
 scratch directory of your choosing, referred to below as `$SCRATCH`.
 
