@@ -53,7 +53,7 @@ development build of `protium prefix new` offers it. A released protium offers
 `protium runtime install` instead, which installs the runtime it was released
 with in seconds. Either way it prints what it is about to do and waits for an
 answer, because neither a download nor a build is what `prefix new` reads like.
-`--force` answers the question in advance.
+`--yes` (`-y`) answers the question in advance.
 
 It builds the `deps` prefix only where it is missing: a library whose files
 are all in `<root>/deps` already is left alone, so a prefix built by hand is
@@ -565,7 +565,7 @@ protium prefix new default
 
 With no runtime installed, this offers the build above first, prints what it
 is about to fetch and how long it will take, and waits for an answer;
-`--force` answers in advance. With a runtime installed it goes straight to the
+`--yes` (`-y`) answers in advance. With a runtime installed it goes straight to the
 prefix.
 
 It fetches Wine Mono once into `<root>/cache/wine/`, so that `wineboot` does

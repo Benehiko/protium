@@ -81,7 +81,7 @@ When that space is wanted back:
 
 ```
 $ protium install clean
-$ protium install clean --force     # in a script: skip the question
+$ protium install clean --yes       # in a script: skip the question
 ```
 
 The whole directory goes. Nothing in it is protium's — each file is the

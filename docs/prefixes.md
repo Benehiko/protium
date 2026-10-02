@@ -268,7 +268,7 @@ guessed at, because the list is about to be signalled.
 
 ```
 $ protium prefix remove skyrim
-$ protium prefix remove skyrim --force     # in a script: skip the question
+$ protium prefix remove skyrim --yes       # in a script: skip the question
 ```
 
 It prints what is about to go, and then asks:
@@ -290,9 +290,10 @@ exactly as it is — only the link goes:
 Delete the prefix eldenring? [y/N]
 ```
 
-`--force` skips that question and nothing else. It is spelled the same way as
-everywhere else in the CLI, and like `protium install --force` it does not
-widen what the command is willing to do — it only stops it asking.
+`--yes` (`-y`) skips that question and nothing else. It is the same option
+everywhere protium asks, and it does not widen what the command is willing to
+do — it only stops it asking. `--force` is for redoing something, and
+`prefix remove` refuses it.
 
 ### A symlink is unlinked, never followed
 
@@ -341,7 +342,7 @@ if its path runs through another symlink, and never one too few.
 A running prefix is **refused, not stopped**. The two are separate commands on
 purpose: stopping means signalling processes, and one command that both
 signals and deletes is one whose failure modes cannot be reasoned about from
-its name. `protium prefix remove` names the line to run instead, and `--force`
+its name. `protium prefix remove` names the line to run instead, and `--yes`
 does not change this:
 
 ```
@@ -386,7 +387,7 @@ serves every prefix.
 
 ```
 $ protium install clean
-$ protium install clean --force
+$ protium install clean --yes
 ```
 
 The whole directory goes, rather than named entries in it. It holds the

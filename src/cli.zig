@@ -139,15 +139,24 @@ pub fn parse(
     return opts;
 }
 
-/// Whether to skip a command's question. `--force` answered it before
-/// `--yes` existed, and scripts written for v0.2.0 still pass it, so it is
-/// honoured here with a note rather than refused.
-pub fn answeredYes(w: *Io.Writer, opts: Options) !bool {
-    if (opts.yes) return true;
-    if (!opts.force) return false;
-    try w.writeAll("protium: --force answers the question here for now; use --yes (-y), which says what it does.\n\n");
-    return true;
+/// The commands that ask a question, which `--yes` answers. Scripts written
+/// for v0.2.0 pass `--force` to them instead (see CHANGELOG.md).
+pub const asks_with_yes = [_][]const u8{ "prefix new", "prefix remove", "prefix migrate-user", "install clean" };
+
+/// Whether `bad` is `--force` given to one of `asks_with_yes`, so that the
+/// refusal can point at `--yes` rather than only refuse.
+pub fn isRetiredForce(cmd: []const u8, bad: []const u8) bool {
+    if (!std.mem.eql(u8, bad, "--force") and !std.mem.eql(u8, bad, "-f")) return false;
+    for (asks_with_yes) |c| if (std.mem.eql(u8, c, cmd)) return true;
+    return false;
 }
+
+/// What to say instead of the usual refusal.
+pub const retired_force_message =
+    \\--force no longer answers this command's question. Use --yes (-y), which
+    \\says what it does: it answers the question, and every check still runs.
+    \\
+;
 
 const testing = std.testing;
 
@@ -219,12 +228,23 @@ test "run's program and its arguments are passed through untouched" {
     try testing.expectEqualStrings("-windowed", o.positional[1]);
 }
 
-test "--yes answers; the old --force still does, with a note" {
-    var buf: [256]u8 = undefined;
-    var w: Io.Writer = .fixed(&buf);
-    try testing.expect(try answeredYes(&w, .{ .yes = true }));
-    try testing.expectEqual(@as(usize, 0), w.buffered().len);
-    try testing.expect(!try answeredYes(&w, .{}));
-    try testing.expect(try answeredYes(&w, .{ .force = true }));
-    try testing.expect(std.mem.indexOf(u8, w.buffered(), "--yes") != null);
+test "the old --force on a question is recognised, so the refusal can name --yes" {
+    for (asks_with_yes) |c| {
+        try testing.expect(isRetiredForce(c, "--force"));
+        try testing.expect(isRetiredForce(c, "-f"));
+        try testing.expect(!isRetiredForce(c, "--undo"));
+    }
+    // Where --force means something else, or never meant anything, it is not
+    // the retired spelling of --yes.
+    try testing.expect(!isRetiredForce("status", "--force"));
+    try testing.expect(!isRetiredForce("prefix stop", "--force"));
+    try testing.expect(std.mem.indexOf(u8, retired_force_message, "--yes (-y)") != null);
+}
+
+test "the commands that ask take --yes and not --force" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const asks: Allow = .{ .yes = true };
+    try testing.expect((try parseFor(&arena, &.{ "games", "-y" }, false, asks)).yes);
+    try testing.expectEqualStrings("--force", (try parseFor(&arena, &.{ "games", "--force" }, false, asks)).bad.?);
 }
