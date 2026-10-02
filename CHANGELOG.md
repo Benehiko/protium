@@ -6,6 +6,25 @@ pre-release such as `v0.2.0-rc1` uses its version's section. `make tag`
 refuses a version that has no section here, so write the notes first, in a
 pull request like any other change.
 
+## v0.3.1
+
+`--yes` answers a question, and `--force` no longer does.
+
+### Changed
+
+* **`--force` no longer answers a question.** `prefix new`, `prefix remove`,
+  `prefix migrate-user` and `install clean` refuse it, and say to use `--yes`
+  (`-y`) instead. A script that passed `--force` to them stops there rather
+  than going ahead. v0.3.0 still took it, with a note. `prefix stop`,
+  `install` and `d3dmetal install` keep `--force`, where it means redo or do
+  it harder.
+
+### Fixed
+
+* **The docs said `--force`** where `prefix remove`, `install clean` and
+  `prefix new` take `--yes`: `docs/prefixes.md`, `docs/install.md` and
+  `docs/wine-build.md`.
+
 ## v0.3.0
 
 The easy way in: `protium runtime install` is the whole of getting Wine.

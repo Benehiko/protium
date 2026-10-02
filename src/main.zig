@@ -186,9 +186,13 @@ fn dispatch(
 const cli = @import("cli.zig");
 const Options = cli.Options;
 const parseOptions = cli.parse;
-const answeredYes = cli.answeredYes;
 
 fn reportBadOption(w: *Io.Writer, cmd: []const u8, bad: []const u8) !u8 {
+    if (cli.isRetiredForce(cmd, bad)) {
+        try w.print("protium {s}: ", .{cmd});
+        try w.writeAll(cli.retired_force_message);
+        return 2;
+    }
     try w.print("protium {s}: {s} is not an option this command takes, or is missing its value\n", .{ cmd, bad });
     try w.writeAll("Run `protium` on its own for the list.\n");
     return 2;
@@ -599,7 +603,7 @@ fn prefixNew(
     args: []const []const u8,
     w: *Io.Writer,
 ) !u8 {
-    const opts = try parseOptions(arena, args, false, .{ .runtime = true, .yes = true, .force = true });
+    const opts = try parseOptions(arena, args, false, .{ .runtime = true, .yes = true });
     if (opts.bad) |b| return reportBadOption(w, "prefix new", b);
     if (opts.positional.len == 0) {
         try w.writeAll("protium prefix new: name the prefix — `protium prefix new default`\n");
@@ -643,7 +647,7 @@ fn prefixNew(
             "There is no Wine under {s}/{s}, and a prefix cannot be created without one.\n\n",
             .{ sess.root, layout.runtimes },
         );
-        const yes = try answeredYes(w, opts);
+        const yes = opts.yes;
         if (runtime_sha256.len != 0) {
             if (try offerRuntimeInstall(arena, io, vars, sess, w, !yes) != 0) return 1;
         } else {
@@ -1065,7 +1069,7 @@ fn prefixRemove(
     args: []const []const u8,
     w: *Io.Writer,
 ) !u8 {
-    const opts = try parseOptions(arena, args, false, .{ .yes = true, .force = true });
+    const opts = try parseOptions(arena, args, false, .{ .yes = true });
     if (opts.bad) |b| return reportBadOption(w, "prefix remove", b);
     if (opts.positional.len == 0) {
         // Deliberately not the default prefix. Every other command falls back
@@ -1146,7 +1150,7 @@ fn prefixRemove(
     const what = std.fmt.bufPrint(&what_buf, "the prefix {s}", .{name}) catch "the prefix";
     if (try describeTree(w, what, dir, m) != 0) return 1;
 
-    if (!try answeredYes(w, opts)) {
+    if (!opts.yes) {
         var question: [256]u8 = undefined;
         const prompt = std.fmt.bufPrint(&question, "Delete the prefix {s}?", .{name}) catch "Delete it?";
         if (!try confirm(io, w, prompt, "Pass --yes (-y) to delete without the question.")) {
@@ -1197,7 +1201,7 @@ fn prefixMigrateUser(
     args: []const []const u8,
     w: *Io.Writer,
 ) !u8 {
-    var opts = try parseOptions(arena, args, false, .{ .prefix = true, .yes = true, .force = true });
+    var opts = try parseOptions(arena, args, false, .{ .prefix = true, .yes = true });
     if (opts.bad) |b| return reportBadOption(w, "prefix migrate-user", b);
     if (opts.positional.len > 0) opts.prefix = opts.positional[0];
 
@@ -1251,7 +1255,7 @@ fn prefixMigrateUser(
     try w.print("\nSteam's sign-in and its CEF cache live under {s}/AppData/Local/Steam,\n", .{profile.legacy_dir});
     try w.writeAll("and move with the profile.\n\n");
 
-    if (!try answeredYes(w, opts)) {
+    if (!opts.yes) {
         if (!try confirm(io, w, "Migrate this prefix?", "Pass --yes (-y) to migrate without the question.")) {
             try w.writeAll("Nothing was changed.\n");
             return 1;
@@ -3202,6 +3206,9 @@ fn installClean(
     opts: Options,
     w: *Io.Writer,
 ) !u8 {
+    // `install` takes --force for reinstalling, so the parser lets it through;
+    // on `clean` it would be the retired spelling of --yes.
+    if (opts.force) return reportBadOption(w, "install clean", "--force");
     const sess = session.Session.open(arena, io, vars) catch |err| switch (err) {
         error.NoHome => {
             try w.writeAll("protium: no HOME, and no PROTIUM_HOME to use instead\n");
@@ -3229,7 +3236,7 @@ fn installClean(
     try w.writeAll("Every installer in it is the publisher's own, and `protium install`\n");
     try w.writeAll("downloads what it needs again.\n\n");
 
-    if (!try answeredYes(w, opts) and !try confirm(io, w, "Delete the downloaded installers?", "Pass --yes (-y) to delete without the question.")) {
+    if (!opts.yes and !try confirm(io, w, "Delete the downloaded installers?", "Pass --yes (-y) to delete without the question.")) {
         try w.writeAll("Nothing was deleted.\n");
         return 1;
     }
