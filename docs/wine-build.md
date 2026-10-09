@@ -47,7 +47,7 @@ protium build
 That command is this document, carried out: it fetches CrossOver's sources,
 bison and llvm-mingw into `<root>/build`, applies the patches, adds
 `SONAME_LIBVULKAN`, configures, builds, installs the result as the runtime
-`wine-11.0-cx26.3-p3`, and copies FreeType and GnuTLS into it with their
+`wine-11.0-cx26.3-p4`, and copies FreeType and GnuTLS into it with their
 install names rewritten. When there is no runtime to boot a prefix with, a
 development build of `protium prefix new` offers it. A released protium offers
 `protium runtime install` instead, which installs the runtime it was released
@@ -408,7 +408,7 @@ gphoto2, sane, capi20, Samba NetAPI, krb5. Four are worth a decision:
 | --- | --- | --- |
 | `libvulkan`/MoltenVK | no Vulkan | irrelevant — D3DMetal goes straight to Metal |
 | GStreamer / FFmpeg | no `winegstreamer` media playback | fine for games that decode video in-engine |
-| SDL2 | no SDL joystick backend | controllers arrive raw through IOHID, which a prefix must allow and `patches/0003` must read — see [`controllers.md`](controllers.md) |
+| SDL2 | no SDL joystick backend | controllers arrive raw through IOHID, which a prefix must allow and `patches/0003` and `0004` must read — see [`controllers.md`](controllers.md) |
 | GnuTLS | no schannel TLS, so no HTTPS and no `wss://` for any Windows program | **build it** — the recipe's `deps` prefix does |
 
 FreeType and GnuTLS are the two worth building. Without FreeType, Wine has no
@@ -443,16 +443,16 @@ Install it under `runtimes/` in protium's root and protium finds it without
 being told; the last path component is the name it will be known by. A build
 with protium's patches applied is named for its patch level —
 `wine-11.0-cx26.3-p1` carries `patches/0001`, `-p2` carries 0001 and 0002,
-`-p3` all three —
+`-p4` all four —
 and installed **beside** the unpatched one, never over it, so that `protium
 run --runtime <name>` can A/B the two from the same prefix. Note that a prefix
 cannot always be shared across that
 boundary: `-p2` changes the Windows user, so a prefix made by `-p1` needs
 `protium prefix migrate-user` before `-p2` will find its profile, and once
 migrated `-p1` will not — see
-[`prefixes.md`](prefixes.md#the-windows-user-is-protium). `-p3` changes
-only how controllers are read, so a prefix moves between `-p2` and `-p3`
-freely. The `root`
+[`prefixes.md`](prefixes.md#the-windows-user-is-protium). `-p3` and
+`-p4` change only how controllers are read, so a prefix moves between `-p2`
+and `-p4` freely. The `root`
 line above is protium's own rule spelled out — `$PROTIUM_HOME`, else
 `$XDG_DATA_HOME/protium`, else `$HOME/.local/share/protium` — so someone who
 keeps the 1.1 GB tree on another disk sets `PROTIUM_HOME` and changes nothing

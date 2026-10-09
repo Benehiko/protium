@@ -1,0 +1,229 @@
+winebus.sys: Decode an Xbox controller that macOS passes through as GIP.
+
+On macOS 15 and later an Xbox controller on USB is claimed by Apple's
+XboxUSBDevice driver. It reaches IOHID as a device whose primary usage says
+gamepad but whose report descriptor holds nothing but vendor-defined bytes:
+the controller's own GIP packets, passed through. winebus admits it as a raw
+gamepad, and winexinput.sys then has nothing to read ("HidP_GetButtonCaps
+returned 0xc0110004"), so XInput reports no controller at all. The synthetic
+HID gamepad macOS also publishes for it (AppleGCSyntheticDevice, 045e:028e)
+is not visible to IOHIDManager, so it is no way round. CrossOver's own Xbox
+bus speaks the Xbox 360 protocol over IOUSB and disables itself on Sequoia.
+
+Report 0x20 is GIP's input packet: a four-byte header, two button bytes,
+two 10-bit triggers, then four signed 16-bit stick axes with up as positive.
+Report 0x07 carries the guide button. When a Microsoft device's descriptor
+has vendor pages and no buttons or axes, build the gamepad the SDL backend
+builds and translate these reports into it, with SDL's button indices. The
+device stays flagged hidraw: it is the same raw device, decoded, and the same
+prefix settings that admit a Bluetooth gamepad admit this one.
+
+Measured on a 045e:0b12 under Wine 11.0 from crossover-sources-26.3.0 on
+macOS 26: reports every 8 ms, XInput's state 1.2 ms (median) behind them,
+every stick value identical. Rumble is not implemented. See
+docs/controllers.md.
+
+--- a/dlls/winebus.sys/bus_iohid.c
++++ b/dlls/winebus.sys/bus_iohid.c
+@@ -265,8 +265,174 @@
+     iohid_device_set_output_report,
+     iohid_device_get_feature_report,
+     iohid_device_set_feature_report,
++};
++
++/* An Xbox controller on USB is claimed by Apple's XboxUSBDevice driver on
++ * macOS 15 and later, which publishes it to IOHID as a gamepad whose report
++ * descriptor holds nothing but vendor-defined bytes: the controller's own GIP
++ * packets, passed through. Report 0x20 is GIP's input packet (header, two
++ * button bytes, two 10-bit triggers, four signed 16-bit stick axes with up as
++ * positive) and report 0x07 carries the guide button. Decode them into the
++ * gamepad the SDL backend builds, so that XInput and DirectInput see an
++ * ordinary controller. Measured on a 045e:0b12. */
++
++static BOOL is_gip_passthrough(IOHIDDeviceRef device, WORD vid)
++{
++    BOOL vendor = FALSE;
++    DWORD page = 0, value;
++    const UInt8 *ptr;
++    CFDataRef data;
++    CFIndex len, i, j;
++    BYTE size;
++
++    if (vid != 0x045e) return FALSE;
++    if (!(data = IOHIDDeviceGetProperty(device, CFSTR(kIOHIDReportDescriptorKey)))) return FALSE;
++    ptr = CFDataGetBytePtr(data);
++    len = CFDataGetLength(data);
++
++    for (i = 0; i < len; i += 1 + size)
++    {
++        if (ptr[i] == 0xfe) return FALSE; /* long item: not this */
++        size = ptr[i] & 3;
++        if (size == 3) size = 4;
++        if (i + size >= len) break;
++        for (value = 0, j = 0; j < size; j++) value |= (DWORD)ptr[i + 1 + j] << (8 * j);
++
++        switch (ptr[i] & 0xfc)
++        {
++        case 0x04: /* usage page */
++            page = value;
++            if (page >= 0xff00) vendor = TRUE;
++            if (page == HID_USAGE_PAGE_BUTTON) return FALSE;
++            break;
++        case 0x08: /* usage */
++            if (page == HID_USAGE_PAGE_GENERIC && value >= HID_USAGE_GENERIC_X && value <= HID_USAGE_GENERIC_HATSWITCH)
++                return FALSE;
++            break;
++        }
++    }
++
++    return vendor;
++}
++
++static void handle_gip_report(void *context, IOReturn result, void *sender, IOHIDReportType type,
++                              uint32_t reportID, uint8_t *report, CFIndex report_length)
++{
++    struct unix_device *iface = (struct unix_device *)context;
++    struct hid_device_state *state = &iface->hid_device_state;
++    static const struct { int index; WORD mask; } map[] =
++    {
++        {0, 0x0010}, /* A */
++        {1, 0x0020}, /* B */
++        {2, 0x0040}, /* X */
++        {3, 0x0080}, /* Y */
++        {4, 0x1000}, /* LB */
++        {5, 0x2000}, /* RB */
++        {6, 0x0008}, /* View */
++        {7, 0x0004}, /* Menu */
++        {8, 0x4000}, /* LS */
++        {9, 0x8000}, /* RS */
++        {10, 0x0100}, /* up */
++        {11, 0x0800}, /* right */
++        {12, 0x0200}, /* down */
++        {13, 0x0400}, /* left */
++    };
++    WORD buttons;
++    UINT i;
++
++    if (report_length >= 18 && report[0] == 0x20)
++    {
++        buttons = report[4] | (report[5] << 8);
++        for (i = 0; i < ARRAY_SIZE(map); i++) hid_device_set_button(iface, map[i].index, !!(buttons & map[i].mask));
++        hid_device_set_hatswitch_x(iface, 0, !!(buttons & 0x0800) - !!(buttons & 0x0400));
++        hid_device_set_hatswitch_y(iface, 0, !!(buttons & 0x0200) - !!(buttons & 0x0100));
++
++        hid_device_set_abs_axis(iface, 0, (SHORT)(report[10] | (report[11] << 8)));
++        hid_device_set_abs_axis(iface, 1, (SHORT)(report[12] | (report[13] << 8)));
++        hid_device_set_abs_axis(iface, 2, (SHORT)(report[14] | (report[15] << 8)));
++        hid_device_set_abs_axis(iface, 3, (SHORT)(report[16] | (report[17] << 8)));
++        hid_device_set_abs_axis(iface, 4, min(report[6] | (report[7] << 8), 1023) * 32767 / 1023);
++        hid_device_set_abs_axis(iface, 5, min(report[8] | (report[9] << 8), 1023) * 32767 / 1023);
++    }
++    else if (report_length >= 5 && report[0] == 0x07)
++        hid_device_set_button(iface, 16, report[4] & 0x01); /* guide */
++    else
++        return;
++
++    bus_event_queue_input_report(&event_queue, iface, state->report_buf, state->report_len);
++}
++
++static void gip_device_destroy(struct unix_device *iface)
++{
++}
++
++static NTSTATUS gip_device_start(struct unix_device *iface)
++{
++    struct iohid_device *impl = impl_from_unix_device(iface);
++    DWORD length = CFNumberToDWORD(IOHIDDeviceGetProperty(impl->device, CFSTR(kIOHIDMaxInputReportSizeKey)));
++
++    if (!length || !(impl->buffer = malloc(length))) return STATUS_NO_MEMORY;
++    IOHIDDeviceRegisterInputReportCallback(impl->device, impl->buffer, length, handle_gip_report, iface);
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS gip_device_haptics_start(struct unix_device *iface, UINT duration_ms,
++                                         USHORT rumble_intensity, USHORT buzz_intensity,
++                                         USHORT left_intensity, USHORT right_intensity)
++{
++    return STATUS_NOT_SUPPORTED;
++}
++
++static NTSTATUS gip_device_haptics_stop(struct unix_device *iface)
++{
++    return STATUS_NOT_SUPPORTED;
++}
++
++static NTSTATUS gip_device_physical_device_control(struct unix_device *iface, USAGE control)
++{
++    return STATUS_NOT_SUPPORTED;
++}
++
++static NTSTATUS gip_device_physical_device_set_gain(struct unix_device *iface, BYTE percent)
++{
++    return STATUS_NOT_SUPPORTED;
++}
++
++static NTSTATUS gip_device_physical_effect_control(struct unix_device *iface, BYTE index,
++                                                   USAGE control, BYTE iterations)
++{
++    return STATUS_NOT_SUPPORTED;
++}
++
++static NTSTATUS gip_device_physical_effect_update(struct unix_device *iface, BYTE index,
++                                                  struct effect_params *params)
++{
++    return STATUS_NOT_SUPPORTED;
++}
++
++static const struct hid_device_vtbl gip_device_vtbl =
++{
++    gip_device_destroy,
++    gip_device_start,
++    iohid_device_stop,
++    gip_device_haptics_start,
++    gip_device_haptics_stop,
++    gip_device_physical_device_control,
++    gip_device_physical_device_set_gain,
++    gip_device_physical_effect_control,
++    gip_device_physical_effect_update,
+ };
+ 
++static BOOL gip_build_report_descriptor(struct unix_device *iface)
++{
++    static const USAGE_AND_PAGE device_usage = {.UsagePage = HID_USAGE_PAGE_GENERIC, .Usage = HID_USAGE_GENERIC_GAMEPAD};
++
++    if (!hid_device_begin_report_descriptor(iface, &device_usage)) return FALSE;
++    if (!hid_device_add_gamepad(iface)) return FALSE;
++    if (!hid_device_end_report_descriptor(iface)) return FALSE;
++    return TRUE;
++}
++
+ static void handle_DeviceMatchingCallback(void *context, IOReturn result, void *sender, IOHIDDeviceRef IOHIDDevice)
+ {
+     struct device_desc desc =
+@@ -327,6 +493,26 @@
+             desc.is_gamepad = TRUE;
+     }
+ 
++    if (is_gip_passthrough(IOHIDDevice, desc.vid))
++    {
++        /* Still flagged hidraw: it is the same raw device, decoded, and the
++         * same prefix settings that admit a Bluetooth gamepad admit this. */
++        desc.is_gamepad = TRUE;
++        TRACE("dev %p, desc %s: GIP passthrough, decoding it.\n", IOHIDDevice, debugstr_device_desc(&desc));
++
++        if (!(impl = hid_device_create(&gip_device_vtbl, sizeof(struct iohid_device)))) return;
++        impl->device = IOHIDDevice;
++        impl->buffer = NULL;
++        if (!gip_build_report_descriptor(&impl->unix_device))
++        {
++            impl->unix_device.vtbl->destroy(&impl->unix_device);
++            return;
++        }
++        list_add_tail(&device_list, &impl->unix_device.entry);
++        bus_event_queue_device_created(&event_queue, &impl->unix_device, &desc);
++        return;
++    }
++
+     TRACE("dev %p, desc %s.\n", IOHIDDevice, debugstr_device_desc(&desc));
+ 
+     if (!(impl = raw_device_create(&iohid_device_vtbl, sizeof(struct iohid_device)))) return;

@@ -20,8 +20,14 @@ Game controllers reach Windows games.
   `protium prefix stop` once. See `docs/controllers.md`.
 * **An Xbox controller over Bluetooth had no right stick,** its stick moved
   the triggers, its triggers did nothing, and its bumpers read as Back and
-  Start. `patches/0003` reads the layout it uses, and the runtime it builds is
-  `wine-11.0-cx26.3-p3`. A prefix moves between `-p2` and `-p3` freely.
+  Start. `patches/0003` reads the layout it uses.
+* **An Xbox controller on USB was not a controller at all.** macOS hands it
+  to Wine as raw Xbox protocol (GIP) packets, which nothing in Wine read.
+  `patches/0004` decodes them; over USB the controller reports every 8 ms,
+  against 30 ms over Bluetooth. Rumble is not implemented.
+
+The runtime these build is `wine-11.0-cx26.3-p4`. A prefix moves between
+`-p2` and `-p4` freely.
 
 ## v0.3.1
 

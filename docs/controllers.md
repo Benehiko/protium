@@ -18,9 +18,12 @@ controller connected, and Elden Ring does not respond to it.*
   prefix the first time `protium run` launches something in it. winebus reads
   them when it starts, so a prefix that was already running needs `protium
   prefix stop` once.
-* **The runtime has to read it correctly.** `patches/0003` teaches Wine's
-  XInput readers the layout this controller uses over Bluetooth. It is in
-  `wine-11.0-cx26.3-p3` and later.
+* **The runtime has to read it correctly.** Over Bluetooth, `patches/0003`
+  teaches Wine's XInput readers the layout the controller uses. Over USB,
+  `patches/0004` decodes the raw Xbox protocol macOS hands over. Both are in
+  `wine-11.0-cx26.3-p4` and later.
+* **USB is faster.** The controller reports every 8 ms on USB and every
+  30 ms on Bluetooth; see [Latency](#latency-where-it-goes).
 
 ## The one path a controller has
 
@@ -89,6 +92,45 @@ it. Anything else is read exactly as before. With it, XInput's capabilities
 change from `RX=0 RY=0` to `RX=7 RY=7`, the triggers rest at 0, and both
 readers log `right stick on Z/Rz, triggers on Brake/Accelerator: Xbox Bluetooth
 layout`.
+
+## Over USB: raw GIP, decoded
+
+*Measured 2026-10-09 with the same controller on a USB-C cable, where it is
+`045e:0b12`.*
+
+On macOS 15 and later, Apple's `XboxUSBDevice` driver owns the controller
+(`UsbExclusiveOwner`), and IOHID gets two devices from it, neither of them
+usable as it stands:
+
+| Device | What it is | What Wine could do with it |
+| --- | --- | --- |
+| `045e:0b12` "Controller" | primary usage gamepad, but the descriptor is vendor-defined bytes only: input reports `0x20` (18 bytes) and `0x07`, outputs `0x01` and `0x05` — the controller's own GIP packets | admitted as a raw gamepad, then `winexinput` finds nothing to read (`HidP_GetButtonCaps returned 0xc0110004`) and XInput reports no controller |
+| `045e:028e` "GamePad-1" | `AppleGCSyntheticDevice`: a 360-style HID gamepad macOS publishes for GameController's sake, every 8 ms | invisible: `IOHIDManager` never offers it, to Wine or to a native program |
+
+CrossOver's `bus_xbox360.c` is no help: it speaks the Xbox 360 protocol over
+IOUSB, not GIP, and disables itself on Sequoia because GameController owns the
+device.
+
+Report `0x20` is GIP's input packet, the one Linux's `xpad` decodes:
+
+| Bytes | Field |
+| --- | --- |
+| 0–3 | header: `20`, flags, sequence, length (`2c`; the payload is cut at 18 bytes) |
+| 4–5 | buttons: Menu `0x0004`, View `0x0008`, A `0x0010`, B `0x0020`, X `0x0040`, Y `0x0080`, d-pad `0x0100`–`0x0800` (up, down, left, right), LB `0x1000`, RB `0x2000`, LS `0x4000`, RS `0x8000` |
+| 6–9 | left and right trigger, 0–1023 |
+| 10–17 | LX, LY, RX, RY, signed 16-bit, up positive |
+
+`patches/0004` recognises such a device — Microsoft's vendor ID, vendor pages
+and no buttons or axes in its descriptor — and builds for it the gamepad the
+SDL backend builds, translating each report with SDL's button numbering. It
+stays flagged hidraw, so the same two registry values admit it.
+
+Measured against a native IOHID listener as for Bluetooth below: reports every
+8.0 ms (median, 3.9 ms at the fastest), XInput's state 1.2 ms behind them
+(p90 1.7 ms), and all 247 stick values identical, Y included. Of the
+buttons, a raw capture showed A, B, LB, RB, LS and RS at the bits above; X,
+Y, Menu, View, the d-pad and the guide report are GIP's documented layout,
+not yet seen from this controller. Rumble is not implemented.
 
 ## Latency: where it goes
 
