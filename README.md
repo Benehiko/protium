@@ -130,6 +130,14 @@ paid, supported option.
 **Do online games with anti-cheat work?** No. protium runs single-player
 games. [What works](docs/status.md) lists the details.
 
+**Can I use an Xbox controller?** Yes, over Bluetooth or USB, from protium
+v0.4.0. A new install gets the runtime that supports it,
+`wine-11.0-cx26.3-p4`. If you are upgrading from an older runtime, protium
+keeps using that one until you switch:
+`protium use --runtime wine-11.0-cx26.3-p4`. USB responds faster than
+Bluetooth, and rumble does not work yet.
+[Game controllers](docs/controllers.md) has the details.
+
 ## Licence
 
 protium's own code is [Apache 2.0](LICENSE). The Wine patches in
