@@ -124,6 +124,16 @@ pub const patches = [_]Patch{
         .why = "CodeWeavers hardcode the Windows user as `crossover` in three places; this makes it `protium`",
         .text = @embedFile("patch_0002"),
     },
+    .{
+        .name = "0003-winexinput-xinput-read-the-Xbox-Bluetooth-gamepad-layout.patch",
+        .why = "without SDL an Xbox controller over Bluetooth arrives raw: right stick on Z/Rz, triggers on Brake/Accelerator, gapped buttons",
+        .text = @embedFile("patch_0003"),
+    },
+    .{
+        .name = "0004-winebus-decode-an-Xbox-controller-macOS-passes-through-as-GIP.patch",
+        .why = "on USB, macOS hands an Xbox controller over as raw GIP packets that nothing in Wine could read",
+        .text = @embedFile("patch_0004"),
+    },
 };
 
 /// The name the finished runtime is installed under, and the name of the
@@ -550,10 +560,10 @@ pub fn withVulkanSoname(gpa: std.mem.Allocator, config_h: []const u8) ![]u8 {
 const testing = std.testing;
 
 test "the runtime is named for the Wine, the CrossOver release and the patch level" {
-    // A build with both patches is -p2, and installs beside a -p1 rather than
-    // over it. If a patch is added, this name changes, which is the point.
-    try testing.expectEqualStrings("wine-11.0-cx26.3-p2", runtime_name);
-    try testing.expectEqualStrings("build-p2", build_subdir);
+    // A build with all four patches is -p4, and installs beside a -p2 rather
+    // than over it. If a patch is added, this name changes, which is the point.
+    try testing.expectEqualStrings("wine-11.0-cx26.3-p4", runtime_name);
+    try testing.expectEqualStrings("build-p4", build_subdir);
 }
 
 /// Whether `s` is a SHA-256 written as 64 lower-case hex characters, which is
@@ -600,7 +610,7 @@ test "a release publishes the runtime under its own tag" {
     const url = try runtimeUrl(a, "0.2.0");
     defer a.free(url);
     try testing.expectEqualStrings(
-        "https://github.com/Benehiko/protium/releases/download/v0.2.0/wine-11.0-cx26.3-p2-macos-x86_64.tar.gz",
+        "https://github.com/Benehiko/protium/releases/download/v0.2.0/wine-11.0-cx26.3-p4-macos-x86_64.tar.gz",
         url,
     );
     // The archive unpacks to the runtime's own directory name, which is what

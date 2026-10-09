@@ -6,6 +6,29 @@ pre-release such as `v0.2.0-rc1` uses its version's section. `make tag`
 refuses a version that has no section here, so write the notes first, in a
 pull request like any other change.
 
+## Unreleased
+
+Game controllers reach Windows games.
+
+### Fixed
+
+* **A paired controller did nothing in a game.** Wine saw it and then dropped
+  it, because winebus refuses a gamepad over the one path this build has —
+  IOHID — unless told SDL and evdev are not there. protium now says so in
+  every prefix: when it creates one, and the first time `protium run`
+  launches something in an older one. A prefix that is already running needs
+  `protium prefix stop` once. See `docs/controllers.md`.
+* **An Xbox controller over Bluetooth had no right stick,** its stick moved
+  the triggers, its triggers did nothing, and its bumpers read as Back and
+  Start. `patches/0003` reads the layout it uses.
+* **An Xbox controller on USB was not a controller at all.** macOS hands it
+  to Wine as raw Xbox protocol (GIP) packets, which nothing in Wine read.
+  `patches/0004` decodes them; over USB the controller reports every 8 ms,
+  against 30 ms over Bluetooth. Rumble is not implemented.
+
+The runtime these build is `wine-11.0-cx26.3-p4`. A prefix moves between
+`-p2` and `-p4` freely.
+
 ## v0.3.1
 
 `--yes` answers a question, and `--force` no longer does.

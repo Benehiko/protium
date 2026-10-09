@@ -102,6 +102,8 @@ fn addPatches(b: *std.Build, module: *std.Build.Module) void {
     const names = [_][]const u8{
         "0001-ntdll-test-only-the-byte-of-a-BOOLEAN-syscall-argument.patch",
         "0002-advapi32-shell32-report-the-Windows-user-as-protium.patch",
+        "0003-winexinput-xinput-read-the-Xbox-Bluetooth-gamepad-layout.patch",
+        "0004-winebus-decode-an-Xbox-controller-macOS-passes-through-as-GIP.patch",
     };
     for (names, 1..) |name, n| {
         module.addAnonymousImport(

@@ -23,6 +23,7 @@ pub const profile = @import("profile.zig");
 pub const recipe = @import("recipe.zig");
 pub const complete = @import("complete.zig");
 pub const steamapp = @import("steamapp.zig");
+pub const gamepad = @import("gamepad.zig");
 
 test {
     _ = macho;
@@ -43,4 +44,5 @@ test {
     _ = recipe;
     _ = complete;
     _ = steamapp;
+    _ = gamepad;
 }
