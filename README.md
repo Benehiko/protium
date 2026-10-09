@@ -1,6 +1,7 @@
 # protium
 
-**Play your Windows games on a Mac.**
+**Play your Windows games on a Mac.** Run Windows Steam games on macOS with
+Wine and Apple's D3DMetal, on Apple silicon.
 
 Elden Ring on a Mac mini M4: 60 fps at 1280×720, the game's own cap, or 33 fps
 at 2560×1440 with every setting on High. Your Steam library, in Windows Steam,
@@ -91,6 +92,23 @@ games and prefixes in full.
 * [Build Wine yourself](docs/wine-build.md#build-wine-yourself): from CodeWeavers' published sources
 * [Why not Proton?](docs/why-not-proton.md)
 * [Contributing](CONTRIBUTING.md)
+
+## FAQ
+
+**Can I play Windows games on a Mac?** Yes, on an Apple silicon Mac. protium
+runs them in Wine, and Apple's D3DMetal translates Direct3D to Metal. No Boot
+Camp or virtual machine is involved.
+
+**Can I play Steam games on macOS that only have a Windows version?** Yes.
+protium installs Windows Steam into a Wine prefix, finds the games in your
+Steam libraries, and launches them by title: `protium run "elden ring"`.
+
+**Is it free?** Yes. protium is open source under Apache 2.0, and it has no
+subscription. [CrossOver](https://www.codeweavers.com/crossover) is the
+paid, supported option.
+
+**Do online games with anti-cheat work?** No. protium runs single-player
+games. [What works](docs/status.md) lists the details.
 
 ## Licence
 
