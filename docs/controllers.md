@@ -202,8 +202,58 @@ full strength for the two seconds between the two calls, and stopped.
 
 A refused write logs `IOHIDDeviceSetReport returned` with the `IOReturn` on
 the hid channel. Not yet tried: a game driving it, and the trigger motors on
-their own (XInput has no call for them). Rumble over Bluetooth is not covered
-by this patch.
+their own (XInput has no call for them).
+
+### Rumble over Bluetooth
+
+*Measured 2026-10-10 with the same controller paired over Bluetooth
+(`045e:0b13`).*
+
+Over Bluetooth the controller reaches XInput as its raw HID device, and that
+device has no Haptics page collection, the only thing XInput's reader looks
+for. XInput therefore reported no force feedback and `XInputSetState` did
+nothing.
+
+Its descriptor (`IOHIDDeviceGetProperty`, `kIOHIDReportDescriptorKey`)
+carries rumble on the Physical Interface Device page instead, as output
+report `0x03` inside a Set Effect Report collection (`0f:21`);
+`MaxOutputReportSize` is 9:
+
+| Byte | Usage (`0f:…`) | Value |
+| --- | --- | --- |
+| 0 | — | report ID `03` |
+| 1 | DC Enable Actuators `97`, 4 bits | `0f`: all four |
+| 2–5 | Magnitude `70`, 4 × 8 bits, 0–100 | left trigger, right trigger, left motor, right motor |
+| 6 | Duration `50`, 10 ms units | `ff` |
+| 7 | Start Delay `a7` | `00` |
+| 8 | Loop Count `7c` | `eb` |
+
+Written natively with `IOHIDDeviceSetReport` as `03 0f 00 00 3c 3c ff 00 eb`,
+the bytes SDL's HIDAPI driver uses, the controller vibrates; the same report
+with zero magnitudes stops it.
+
+`patches/0006` (`wine-11.0-cx26.3-p6`) teaches `dlls/xinput1_3/main.c`, which
+every `xinput1_*.dll` and `xinputuap.dll` is built from, to look for this
+report when there is no haptics collection — an output Magnitude array of four
+bytes on the PID page — and to write each `XInputSetState` as it: all four
+actuators enabled, the left and right motor scaled to the Magnitude's logical
+maximum, the triggers at zero, and duration `ff` with loop count `eb` so that
+the motors run until the next call. The output report passes through
+`winexinput.sys` to winebus's raw IOHID device, which writes it unchanged.
+
+Through Wine, in a fresh prefix with the rebuilt xinput DLLs, the probe from
+[Checking a controller](#checking-a-controller) got:
+
+```
+caps ret 0 flags 0x1 vib L=255 R=255
+on  ret 0
+off ret 0
+```
+
+and `WINEDEBUG=+xinput` showed `Found PID rumble, report 3 collection 3`, then
+`magnitudes 0 0 100 100` and `magnitudes 0 0 0 0`. The controller vibrated at
+full strength for the two seconds between, and stopped. Not yet tried: a game
+driving it, and DirectInput force feedback over Bluetooth.
 
 ## Latency: where it goes
 
