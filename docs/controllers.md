@@ -90,6 +90,41 @@ change from `RX=0 RY=0` to `RX=7 RY=7`, the triggers rest at 0, and both
 readers log `right stick on Z/Rz, triggers on Brake/Accelerator: Xbox Bluetooth
 layout`.
 
+## Latency: where it goes
+
+With both fixes in place, Elden Ring responded to the controller and the
+response felt late. Measured the same day, with the game running:
+
+| Stage | Median | p90 | Max |
+| --- | --- | --- | --- |
+| Controller → macOS: gap between reports | 30.0 ms | 31.1 ms | 47.6 ms |
+| macOS → XInput in the prefix | 0.9 ms | 1.4 ms | 5.8 ms |
+
+The first row is a native IOHID listener (`IOHIDDeviceRegisterInputReportCallback`
+on `045e:0b13`) timestamping each report with `mach_continuous_time`. The second
+is a console program in the prefix polling `XInputGetState` every millisecond
+and timestamping each new packet with `QueryPerformanceCounter`, which on macOS
+is the same clock in the same units (`monotonic_counter` in
+`dlls/ntdll/unix/sync.c`). The two streams were matched on the left stick's
+raw value: all 266 XInput packets had a native report behind them.
+
+So Wine adds about a millisecond, and its resolution here is the 1 ms poll.
+What the controller costs is the Bluetooth link: a report roughly every 30 ms
+(about 33 a second), so an input waits 15 ms on average before macOS has it at
+all. That is the link macOS negotiated, not anything in Wine, and a native
+game sees the same rate.
+
+Whatever remains is the game's own frame pipeline — an input is read on one
+frame and shown a frame or more later, so at a low frame rate that dominates.
+Two things tell the cases apart: whether the keyboard feels as late as the
+controller (then it is the frames, not the controller), and the frame rate
+itself, which Apple's Metal HUD shows over any Metal app, D3DMetal included,
+with `MTL_HUD_ENABLED=1`.
+
+Wine's own tracing is not free either: `WINEDEBUG=+xinput` writes a line from
+the game's thread on every poll, and `+hid` several per report. Measure
+latency with `WINEDEBUG=-all`.
+
 ## Checking a controller
 
 `joy.cpl` needs a window, and Wine cannot open one from a shell outside the
