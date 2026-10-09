@@ -26,5 +26,8 @@ Enable it in each clone with `git config core.hooksPath .githooks`. It checks
 formatting and the build, and leaves the tests to CI.
 `git commit --no-verify` bypasses it.
 
+Read [AI_POLICY.md](AI_POLICY.md) before you open a pull request. It covers
+AI use, testing, and what the PR body must contain.
+
 [docs/releasing.md](docs/releasing.md) explains how releases are built and
 signed.

@@ -111,7 +111,7 @@ runs. Download it from its
 * [Build Wine yourself](docs/wine-build.md#build-wine-yourself): from CodeWeavers' published sources
 * [Why not Proton?](docs/why-not-proton.md)
 * [elden-ring-mods](https://github.com/Benehiko/elden-ring-mods): Elden Ring with Lua mods and co-op, on protium
-* [Contributing](CONTRIBUTING.md)
+* [Contributing](CONTRIBUTING.md) and the [AI policy](AI_POLICY.md)
 
 ## FAQ
 
