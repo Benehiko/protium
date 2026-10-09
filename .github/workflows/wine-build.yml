@@ -200,7 +200,7 @@ jobs:
         env:
           WINEDLLOVERRIDES: mshtml=
         run: |
-          ./zig-out/bin/protium prefix new ci --force
+          ./zig-out/bin/protium prefix new ci --yes
           test -d "$PROTIUM_HOME/prefixes/ci/drive_c/windows/mono/mono-2.0"
           WINEDEBUG=-all ./zig-out/bin/protium run --prefix ci cmd /c ver | tee "$RUNNER_TEMP/ver.txt"
           grep -q 'Microsoft Windows' "$RUNNER_TEMP/ver.txt"
