@@ -29,6 +29,7 @@ const profile = @import("profile.zig");
 const recipe = @import("recipe.zig");
 const complete = @import("complete.zig");
 const steamapp = @import("steamapp.zig");
+const gamepad = @import("gamepad.zig");
 
 /// The stand-in `steamwebhelper.exe`, built for x86_64-windows from
 /// `src/webhelper.zig` by this repository's own `build.zig` and embedded here.
@@ -716,6 +717,9 @@ fn prefixNew(
         try w.print("\nwineboot exited with {d}. The prefix may be incomplete.\n", .{boot});
         return 1;
     }
+    // Before the wineserver is stopped, so that the first launch already has
+    // winebus reading them.
+    _ = try ensureGamepads(arena, io, vars, dir, loader, w);
 
     // wineboot returning is not the end: wineserver stays alive holding the
     // session open, and would keep this terminal's stdout with it.
@@ -1660,6 +1664,9 @@ fn runLaunch(
     const computed = try env.compute(arena, res.site, res.sess.inherited(), settings);
     for (computed) |v| try vars.put(v.name, v.value);
 
+    // A prefix made before protium set this gets it on its next launch.
+    _ = try ensureGamepads(arena, io, vars, res.prefix.dir, loader, w);
+
     const target = try launchTarget(arena, io, res, opts.positional[0], w) orelse return 1;
 
     // A Steam game started directly needs its app ID, and Steam's own
@@ -1897,6 +1904,46 @@ fn completeInto(
             try complete.emit(w, all.items, cur);
         },
     }
+}
+
+/// Make sure the prefix at `prefix_dir` lets game controllers through to
+/// Windows programs (see `gamepad`). Returns whether anything was written.
+///
+/// Read from `system.reg` first, so that a launch with nothing to change
+/// starts nothing. Written with Wine's own `reg add` rather than by editing
+/// `system.reg`, because a running wineserver owns that file and would write
+/// its own copy over ours. A failure is reported and the launch goes on:
+/// a game without its controller is still a game.
+///
+/// winebus reads the settings when it starts, so a prefix whose wineserver
+/// is already running sees them only after `protium prefix stop`.
+fn ensureGamepads(
+    arena: std.mem.Allocator,
+    io: Io,
+    vars: *std.process.Environ.Map,
+    prefix_dir: []const u8,
+    loader: []const u8,
+    w: *Io.Writer,
+) !bool {
+    const path = try std.fs.path.join(arena, &.{ prefix_dir, layout.boot_marker });
+    const text = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(1 << 28)) catch "";
+    if (gamepad.configured(text)) return false;
+
+    for (gamepad.values) |v| {
+        var buf: [16]u8 = undefined;
+        const args = gamepad.regAddArgs(&buf, v);
+        var argv: [1 + args.len][]const u8 = undefined;
+        argv[0] = loader;
+        @memcpy(argv[1..], &args);
+        if (try spawnQuietly(io, vars, .inherit, &argv) != 0) {
+            try w.print("protium: could not set {s}\\{s}; game controllers will not reach Windows programs.\n", .{ gamepad.key, v.name });
+            try w.writeAll("See docs/controllers.md.\n");
+            return false;
+        }
+    }
+    try w.writeAll("protium: game controllers are now passed to Windows programs in this prefix.\n");
+    try w.writeAll("         If it is running already, `protium prefix stop` first for it to take effect.\n");
+    return true;
 }
 
 /// Run a program to completion with the current environment, giving it this

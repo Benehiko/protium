@@ -1,0 +1,277 @@
+winexinput.sys,xinput1_3: Read the Xbox Bluetooth gamepad layout.
+
+Without SDL, an Xbox Wireless Controller paired over Bluetooth reaches
+winebus through IOHID as its raw HID device, and its report does not look like
+the one Wine's two XInput readers assume. The right stick is on Z/Rz rather
+than Rx/Ry, the triggers are on the Simulation page's Brake and Accelerator,
+the buttons are numbered with gaps (A=1, B=2, X=4, Y=5, LB=7, RB=8, View=11,
+Menu=12, LS=14, RS=15), and the Y axes grow downwards as HID's do. On Linux
+SDL rewrites all of this before Wine sees it; protium's build has no SDL, and
+CrossOver's own Xbox bus disables itself on macOS 15 and later.
+
+Read as it stands, the right stick is missing, its movement appears on both
+triggers (resting at 128), the real triggers do nothing, the bumpers read as
+Back and Start, and X reads as Y. Measured on a 045e:0b13 (firmware
+5.9.2709.0) under Wine 11.0 from crossover-sources-26.3.0; see
+docs/controllers.md.
+
+When a gamepad has Z and Rz, Brake and Accelerator, and no Rx or Ry, read
+Z/Rz as the right stick and Brake/Accelerator as the triggers, renumber the
+buttons, and take Y as HID gives it. A device without that shape is read
+exactly as before.
+
+--- a/dlls/winexinput.sys/main.c
++++ b/dlls/winexinput.sys/main.c
+@@ -159,6 +159,9 @@
+     HIDP_VALUE_CAPS rx_caps;
+     HIDP_VALUE_CAPS ry_caps;
+     HIDP_VALUE_CAPS rt_caps;
++    HIDP_VALUE_CAPS brake_caps;
++    HIDP_VALUE_CAPS accel_caps;
++    BOOL bt_layout;
+     HIDP_DEVICE_DESC device_desc;
+ 
+     /* everything below requires holding the cs */
+@@ -192,11 +195,36 @@
+     return min + MulDiv(tmp - caps->LogicalMin, max - min, caps->LogicalMax - caps->LogicalMin);
+ }
+ 
++/* The Xbox Wireless Controller over Bluetooth (and anything else reporting the
++ * same layout) puts its right stick on Z/Rz and its triggers on the Simulation
++ * page's Brake and Accelerator, and numbers its buttons with gaps: A=1, B=2,
++ * X=4, Y=5, LB=7, RB=8, View=11, Menu=12, LS=14, RS=15. Its Y axes grow
++ * downwards, as HID's do. Wine's SDL backend hides all of this by rewriting the
++ * report, but without SDL the raw device arrives here as it is. */
++static USAGE bt_layout_button(USAGE usage)
++{
++    switch (usage)
++    {
++    case 1: return 1;   /* A */
++    case 2: return 2;   /* B */
++    case 4: return 3;   /* X */
++    case 5: return 4;   /* Y */
++    case 7: return 5;   /* LB */
++    case 8: return 6;   /* RB */
++    case 11: return 7;  /* View */
++    case 12: return 8;  /* Menu */
++    case 14: return 9;  /* LS */
++    case 15: return 10; /* RS */
++    }
++    return 0;
++}
++
+ static void translate_report_to_xinput_state(struct func_device *fdo)
+ {
+     ULONG lx = 0, ly = 0, rx = 0, ry = 0, lt = 0, rt = 0, hat = 0;
++    BOOL bt = fdo->bt_layout;
+     PHIDP_PREPARSED_DATA preparsed;
+-    USAGE usages[10];
++    USAGE usages[16], usage;
+     NTSTATUS status;
+     ULONG i, count;
+ 
+@@ -215,16 +243,16 @@
+     status = HidP_GetUsageValue(HidP_Input, HID_USAGE_PAGE_GENERIC, 0, HID_USAGE_GENERIC_Y,
+                                 &ly, preparsed, fdo->report_buf, fdo->report_len);
+     if (status != HIDP_STATUS_SUCCESS) WARN("HidP_GetUsageValue y returned %#lx\n", status);
+-    status = HidP_GetUsageValue(HidP_Input, HID_USAGE_PAGE_GENERIC, 0, HID_USAGE_GENERIC_Z,
++    status = HidP_GetUsageValue(HidP_Input, fdo->lt_caps.UsagePage, 0, bt ? HID_USAGE_SIMULATION_BRAKE : HID_USAGE_GENERIC_Z,
+                                 &lt, preparsed, fdo->report_buf, fdo->report_len);
+     if (status != HIDP_STATUS_SUCCESS) WARN("HidP_GetUsageValue z returned %#lx\n", status);
+-    status = HidP_GetUsageValue(HidP_Input, HID_USAGE_PAGE_GENERIC, 0, HID_USAGE_GENERIC_RX,
++    status = HidP_GetUsageValue(HidP_Input, HID_USAGE_PAGE_GENERIC, 0, bt ? HID_USAGE_GENERIC_Z : HID_USAGE_GENERIC_RX,
+                                 &rx, preparsed, fdo->report_buf, fdo->report_len);
+     if (status != HIDP_STATUS_SUCCESS) WARN("HidP_GetUsageValue rx returned %#lx\n", status);
+-    status = HidP_GetUsageValue(HidP_Input, HID_USAGE_PAGE_GENERIC, 0, HID_USAGE_GENERIC_RY,
++    status = HidP_GetUsageValue(HidP_Input, HID_USAGE_PAGE_GENERIC, 0, bt ? HID_USAGE_GENERIC_RZ : HID_USAGE_GENERIC_RY,
+                                 &ry, preparsed, fdo->report_buf, fdo->report_len);
+     if (status != HIDP_STATUS_SUCCESS) WARN("HidP_GetUsageValue ry returned %#lx\n", status);
+-    status = HidP_GetUsageValue(HidP_Input, HID_USAGE_PAGE_GENERIC, 0, HID_USAGE_GENERIC_RZ,
++    status = HidP_GetUsageValue(HidP_Input, fdo->rt_caps.UsagePage, 0, bt ? HID_USAGE_SIMULATION_ACCELERATOR : HID_USAGE_GENERIC_RZ,
+                                 &rt, preparsed, fdo->report_buf, fdo->report_len);
+     if (status != HIDP_STATUS_SUCCESS) WARN("HidP_GetUsageValue rz returned %#lx\n", status);
+ 
+@@ -232,13 +260,14 @@
+     else fdo->xinput_state.buttons = hat << 10;
+     for (i = 0; i < count; i++)
+     {
+-        if (usages[i] < 1 || usages[i] > 10) continue;
+-        fdo->xinput_state.buttons |= (1 << (usages[i] - 1));
++        usage = bt ? bt_layout_button(usages[i]) : usages[i];
++        if (usage < 1 || usage > 10) continue;
++        fdo->xinput_state.buttons |= (1 << (usage - 1));
+     }
+     fdo->xinput_state.lx_axis = scale_value(lx, &fdo->lx_caps, 0, 65535);
+-    fdo->xinput_state.ly_axis = scale_value(-ly - 1, &fdo->ly_caps, 0, 65535);
++    fdo->xinput_state.ly_axis = scale_value(bt ? ly : -ly - 1, &fdo->ly_caps, 0, 65535);
+     fdo->xinput_state.rx_axis = scale_value(rx, &fdo->rx_caps, 0, 65535);
+-    fdo->xinput_state.ry_axis = scale_value(-ry - 1, &fdo->ry_caps, 0, 65535);
++    fdo->xinput_state.ry_axis = scale_value(bt ? ry : -ry - 1, &fdo->ry_caps, 0, 65535);
+     rt = scale_value(rt, &fdo->rt_caps, 0, 255);
+     lt = scale_value(lt, &fdo->lt_caps, 0, 255);
+     fdo->xinput_state.trigger = 0x8000 + (lt - rt) * 128;
+@@ -694,12 +723,28 @@
+     else for (i = 0; i < caps.NumberInputValueCaps; i++)
+     {
+         HIDP_VALUE_CAPS *caps = value_caps + i;
++        if (caps->UsagePage == HID_USAGE_PAGE_SIMULATION && !caps->IsRange)
++        {
++            if (caps->NotRange.Usage == HID_USAGE_SIMULATION_BRAKE) fdo->brake_caps = *caps;
++            if (caps->NotRange.Usage == HID_USAGE_SIMULATION_ACCELERATOR) fdo->accel_caps = *caps;
++            continue;
++        }
+         if (caps->UsagePage != HID_USAGE_PAGE_GENERIC) continue;
+         if (!caps->IsRange) check_value_caps(fdo, caps->NotRange.Usage, caps);
+         else for (u = caps->Range.UsageMin; u <=caps->Range.UsageMax; u++) check_value_caps(fdo, u, value_caps + i);
+     }
+     free(value_caps);
+     if (status != HIDP_STATUS_SUCCESS) return status;
++    if (!fdo->rx_caps.UsagePage && !fdo->ry_caps.UsagePage && fdo->lt_caps.UsagePage && fdo->rt_caps.UsagePage &&
++        fdo->brake_caps.UsagePage && fdo->accel_caps.UsagePage)
++    {
++        TRACE("right stick on Z/Rz, triggers on Brake/Accelerator: Xbox Bluetooth layout\n");
++        fdo->rx_caps = fdo->lt_caps;
++        fdo->ry_caps = fdo->rt_caps;
++        fdo->lt_caps = fdo->brake_caps;
++        fdo->rt_caps = fdo->accel_caps;
++        fdo->bt_layout = TRUE;
++    }
+     if (!fdo->lx_caps.UsagePage) WARN("missing lx axis\n");
+     if (!fdo->ly_caps.UsagePage) WARN("missing ly axis\n");
+     if (!fdo->lt_caps.UsagePage) WARN("missing lt axis\n");
+--- a/dlls/xinput1_3/main.c
++++ b/dlls/xinput1_3/main.c
+@@ -72,6 +72,9 @@
+         HIDP_VALUE_CAPS rx_caps;
+         HIDP_VALUE_CAPS ry_caps;
+         HIDP_VALUE_CAPS rt_caps;
++        HIDP_VALUE_CAPS brake_caps;
++        HIDP_VALUE_CAPS accel_caps;
++        BOOL bt_layout;
+ 
+         HANDLE read_event;
+         OVERLAPPED read_ovl;
+@@ -149,6 +152,30 @@
+     }
+ }
+ 
++/* The Xbox Wireless Controller over Bluetooth (and anything else reporting the
++ * same layout) puts its right stick on Z/Rz and its triggers on the Simulation
++ * page's Brake and Accelerator, and numbers its buttons with gaps: A=1, B=2,
++ * X=4, Y=5, LB=7, RB=8, View=11, Menu=12, LS=14, RS=15. Its Y axes grow
++ * downwards, as HID's do. Wine's SDL backend hides all of this by rewriting the
++ * report, but without SDL the raw device arrives here as it is. */
++static USAGE bt_layout_button(USAGE usage)
++{
++    switch (usage)
++    {
++    case 1: return 1;   /* A */
++    case 2: return 2;   /* B */
++    case 4: return 3;   /* X */
++    case 5: return 4;   /* Y */
++    case 7: return 5;   /* LB */
++    case 8: return 6;   /* RB */
++    case 11: return 7;  /* View */
++    case 12: return 8;  /* Menu */
++    case 14: return 9;  /* LS */
++    case 15: return 10; /* RS */
++    }
++    return 0;
++}
++
+ static void check_waveform_caps(struct xinput_controller *controller, HANDLE device, PHIDP_PREPARSED_DATA preparsed,
+                                 HIDP_LINK_COLLECTION_NODE *collections, HIDP_VALUE_CAPS *caps)
+ {
+@@ -245,11 +272,29 @@
+     else for (i = 0; i < controller->hid.caps.NumberInputValueCaps; i++)
+     {
+         HIDP_VALUE_CAPS *caps = value_caps + i;
++        if (caps->UsagePage == HID_USAGE_PAGE_SIMULATION && !caps->IsRange)
++        {
++            if (caps->NotRange.Usage == HID_USAGE_SIMULATION_BRAKE) controller->hid.brake_caps = *caps;
++            if (caps->NotRange.Usage == HID_USAGE_SIMULATION_ACCELERATOR) controller->hid.accel_caps = *caps;
++            continue;
++        }
+         if (caps->UsagePage != HID_USAGE_PAGE_GENERIC) continue;
+         if (!caps->IsRange) check_value_caps(controller, caps->NotRange.Usage, caps);
+         else for (u = caps->Range.UsageMin; u <=caps->Range.UsageMax; u++) check_value_caps(controller, u, value_caps + i);
+     }
+     free(value_caps);
++
++    if (!controller->hid.rx_caps.UsagePage && !controller->hid.ry_caps.UsagePage &&
++        controller->hid.lt_caps.UsagePage && controller->hid.rt_caps.UsagePage &&
++        controller->hid.brake_caps.UsagePage && controller->hid.accel_caps.UsagePage)
++    {
++        TRACE("Right stick on Z/Rz, triggers on Brake/Accelerator: Xbox Bluetooth layout\n");
++        controller->hid.rx_caps = controller->hid.lt_caps;
++        controller->hid.ry_caps = controller->hid.rt_caps;
++        controller->hid.lt_caps = controller->hid.brake_caps;
++        controller->hid.rt_caps = controller->hid.accel_caps;
++        controller->hid.bt_layout = TRUE;
++    }
+ 
+     if (!controller->hid.lt_caps.UsagePage) WARN("Missing axis LeftTrigger\n");
+     else caps->Gamepad.bLeftTrigger = (1u << (sizeof(caps->Gamepad.bLeftTrigger) + 1)) - 1;
+@@ -566,8 +611,10 @@
+     char *report_buf = controller->hid.input_report_buf;
+     XINPUT_STATE state;
+     NTSTATUS status;
+-    USAGE buttons[11];
++    BOOL bt = controller->hid.bt_layout;
++    USAGE buttons[16], usage;
+     ULONG i, button_length, value;
++    LONG axis;
+     BOOL ret;
+ 
+     if (!GetOverlappedResult(controller->device, &controller->hid.read_ovl, &read_len, TRUE))
+@@ -589,7 +636,8 @@
+     state.Gamepad.wButtons = 0;
+     for (i = 0; i < button_length; i++)
+     {
+-        switch (buttons[i])
++        usage = bt ? bt_layout_button(buttons[i]) : buttons[i];
++        switch (usage)
+         {
+         case 1: state.Gamepad.wButtons |= XINPUT_GAMEPAD_A; break;
+         case 2: state.Gamepad.wButtons |= XINPUT_GAMEPAD_B; break;
+@@ -633,22 +681,32 @@
+ 
+     status = HidP_GetUsageValue(HidP_Input, HID_USAGE_PAGE_GENERIC, 0, HID_USAGE_GENERIC_Y, &value, controller->hid.preparsed, report_buf, report_len);
+     if (status != HIDP_STATUS_SUCCESS) WARN("HidP_GetUsageValue HID_USAGE_PAGE_GENERIC / HID_USAGE_GENERIC_Y returned %#lx\n", status);
+-    else state.Gamepad.sThumbLY = scale_value(value, &controller->hid.ly_caps, -32768, 32767);
++    else
++    {
++        axis = scale_value(value, &controller->hid.ly_caps, -32768, 32767);
++        state.Gamepad.sThumbLY = bt ? -axis - 1 : axis;
++    }
+ 
+-    status = HidP_GetUsageValue(HidP_Input, HID_USAGE_PAGE_GENERIC, 0, HID_USAGE_GENERIC_RX, &value, controller->hid.preparsed, report_buf, report_len);
++    status = HidP_GetUsageValue(HidP_Input, HID_USAGE_PAGE_GENERIC, 0, bt ? HID_USAGE_GENERIC_Z : HID_USAGE_GENERIC_RX, &value, controller->hid.preparsed, report_buf, report_len);
+     if (status != HIDP_STATUS_SUCCESS) WARN("HidP_GetUsageValue HID_USAGE_PAGE_GENERIC / HID_USAGE_GENERIC_RX returned %#lx\n", status);
+     else state.Gamepad.sThumbRX = scale_value(value, &controller->hid.rx_caps, -32768, 32767);
+ 
+-    status = HidP_GetUsageValue(HidP_Input, HID_USAGE_PAGE_GENERIC, 0, HID_USAGE_GENERIC_RY, &value, controller->hid.preparsed, report_buf, report_len);
++    status = HidP_GetUsageValue(HidP_Input, HID_USAGE_PAGE_GENERIC, 0, bt ? HID_USAGE_GENERIC_RZ : HID_USAGE_GENERIC_RY, &value, controller->hid.preparsed, report_buf, report_len);
+     if (status != HIDP_STATUS_SUCCESS) WARN("HidP_GetUsageValue HID_USAGE_PAGE_GENERIC / HID_USAGE_GENERIC_RY returned %#lx\n", status);
+-    else state.Gamepad.sThumbRY = scale_value(value, &controller->hid.ry_caps, -32768, 32767);
++    else
++    {
++        axis = scale_value(value, &controller->hid.ry_caps, -32768, 32767);
++        state.Gamepad.sThumbRY = bt ? -axis - 1 : axis;
++    }
+ 
+-    status = HidP_GetUsageValue(HidP_Input, HID_USAGE_PAGE_GENERIC, 0, HID_USAGE_GENERIC_RZ, &value, controller->hid.preparsed, report_buf, report_len);
+-    if (status != HIDP_STATUS_SUCCESS) WARN("HidP_GetUsageValue HID_USAGE_PAGE_GENERIC / HID_USAGE_GENERIC_RZ returned %#lx\n", status);
++    status = HidP_GetUsageValue(HidP_Input, controller->hid.rt_caps.UsagePage, 0,
++                                bt ? HID_USAGE_SIMULATION_ACCELERATOR : HID_USAGE_GENERIC_RZ, &value, controller->hid.preparsed, report_buf, report_len);
++    if (status != HIDP_STATUS_SUCCESS) WARN("HidP_GetUsageValue right trigger returned %#lx\n", status);
+     else state.Gamepad.bRightTrigger = scale_value(value, &controller->hid.rt_caps, 0, 255);
+ 
+-    status = HidP_GetUsageValue(HidP_Input, HID_USAGE_PAGE_GENERIC, 0, HID_USAGE_GENERIC_Z, &value, controller->hid.preparsed, report_buf, report_len);
+-    if (status != HIDP_STATUS_SUCCESS) WARN("HidP_GetUsageValue HID_USAGE_PAGE_GENERIC / HID_USAGE_GENERIC_Z returned %#lx\n", status);
++    status = HidP_GetUsageValue(HidP_Input, controller->hid.lt_caps.UsagePage, 0,
++                                bt ? HID_USAGE_SIMULATION_BRAKE : HID_USAGE_GENERIC_Z, &value, controller->hid.preparsed, report_buf, report_len);
++    if (status != HIDP_STATUS_SUCCESS) WARN("HidP_GetUsageValue left trigger returned %#lx\n", status);
+     else state.Gamepad.bLeftTrigger = scale_value(value, &controller->hid.lt_caps, 0, 255);
+ 
+     EnterCriticalSection(&controller->crit);
