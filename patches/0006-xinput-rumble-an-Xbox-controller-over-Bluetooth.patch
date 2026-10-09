@@ -1,0 +1,140 @@
+xinput: Rumble an Xbox controller over Bluetooth through its PID report.
+
+An Xbox Wireless Controller paired over Bluetooth (045e:0b13) reaches
+XInput as its raw HID device, and that device has no Haptics page
+collection, which is the only thing XInput looks for. So
+XInputGetCapabilities reports no force feedback and XInputSetState does
+nothing.
+
+The controller takes rumble as a Physical Interface Device "Set Effect"
+output report instead, report 0x03 in its descriptor: DC Enable Actuators
+(4 bits), four 8-bit Magnitudes with a logical maximum of 100 (left
+trigger, right trigger, left motor, right motor), Duration in 10 ms,
+Start Delay and Loop Count. Written natively with IOHIDDeviceSetReport as
+03 0f 00 00 3c 3c ff 00 eb, the bytes SDL's HIDAPI driver uses, the
+controller vibrates.
+
+When a controller has no haptics collection but an output Magnitude array
+of four bytes on the PID page, report force feedback, and write each
+XInputSetState as that report: all four actuators enabled, the main motors
+scaled to the Magnitude's logical maximum, duration 0xff and loop count
+0xeb, so the motors run until the next call, as XInput's do. A zero state
+sends zero magnitudes.
+
+Measured on a 045e:0b13 under Wine 11.0 from
+crossover-sources-26.3.0 on macOS 26: the controller vibrates and stops.
+See docs/controllers.md.
+
+--- a/dlls/xinput1_3/main.c
++++ b/dlls/xinput1_3/main.c
+@@ -44,6 +44,13 @@
+ 
+ #include "wine/debug.h"
+ 
++/* Physical Interface Device usages, as in include/wine/hid.h, which cannot be
++ * included here beside winerror.h. */
++#define PID_USAGE_DURATION            ((USAGE) 0x50)
++#define PID_USAGE_MAGNITUDE           ((USAGE) 0x70)
++#define PID_USAGE_LOOP_COUNT          ((USAGE) 0x7c)
++#define PID_USAGE_DC_ENABLE_ACTUATORS ((USAGE) 0x97)
++
+ DEFINE_GUID(GUID_DEVINTERFACE_WINEXINPUT,0x6c53d5fd,0x6480,0x440f,0xb6,0x18,0x47,0x67,0x50,0xc5,0xe1,0xa6);
+ 
+ /* Not defined in the headers, used only by XInputGetStateEx */
+@@ -86,6 +93,9 @@
+         BYTE haptics_report;
+         HIDP_VALUE_CAPS haptics_rumble_caps;
+         HIDP_VALUE_CAPS haptics_buzz_caps;
++
++        BYTE pid_rumble_report;
++        HIDP_VALUE_CAPS pid_magnitude_caps;
+     } hid;
+ };
+ 
+@@ -330,8 +340,29 @@
+     for (i = 0; i < waveform_caps_count; ++i) check_waveform_caps(controller, device, preparsed, collections, waveform_caps + i);
+     free(collections);
+ 
++    /* An Xbox controller over Bluetooth has no haptics collection. It takes
++     * rumble as a PID Set Effect output report instead: actuators to enable,
++     * four magnitudes (left trigger, right trigger, left motor, right motor),
++     * duration, start delay and loop count. */
++    if (!controller->hid.haptics_rumble_caps.UsagePage && !controller->hid.haptics_buzz_caps.UsagePage)
++    {
++        HIDP_VALUE_CAPS magnitude_caps;
++        USHORT count = 1;
++
++        status = HidP_GetSpecificValueCaps(HidP_Output, HID_USAGE_PAGE_PID, 0, PID_USAGE_MAGNITUDE,
++                                           &magnitude_caps, &count, preparsed);
++        if (status == HIDP_STATUS_SUCCESS && count && magnitude_caps.ReportCount == 4 &&
++            magnitude_caps.BitSize == 8 && !magnitude_caps.IsRange)
++        {
++            TRACE("Found PID rumble, report %u collection %u\n", magnitude_caps.ReportID, magnitude_caps.LinkCollection);
++            controller->hid.pid_rumble_report = magnitude_caps.ReportID;
++            controller->hid.pid_magnitude_caps = magnitude_caps;
++        }
++    }
++
+     if (controller->hid.haptics_rumble_caps.UsagePage ||
+-        controller->hid.haptics_buzz_caps.UsagePage)
++        controller->hid.haptics_buzz_caps.UsagePage ||
++        controller->hid.pid_magnitude_caps.UsagePage)
+     {
+         caps->Flags |= XINPUT_CAPS_FFB_SUPPORTED;
+         caps->Vibration.wLeftMotorSpeed = 255;
+@@ -341,6 +372,46 @@
+     return TRUE;
+ }
+ 
++static DWORD PID_set_state(struct xinput_controller *controller, XINPUT_VIBRATION *state)
++{
++    ULONG report_len = controller->hid.caps.OutputReportByteLength;
++    PHIDP_PREPARSED_DATA preparsed = controller->hid.preparsed;
++    char *report_buf = controller->hid.output_report_buf;
++    USHORT collection = controller->hid.pid_magnitude_caps.LinkCollection;
++    LONG max = controller->hid.pid_magnitude_caps.LogicalMax;
++    char magnitudes[4];
++    NTSTATUS status;
++
++    if (max <= 0) max = 100;
++    magnitudes[0] = 0; /* left trigger */
++    magnitudes[1] = 0; /* right trigger */
++    magnitudes[2] = state->wLeftMotorSpeed * max / 65535;
++    magnitudes[3] = state->wRightMotorSpeed * max / 65535;
++
++    status = HidP_InitializeReportForID(HidP_Output, controller->hid.pid_rumble_report, preparsed, report_buf, report_len);
++    if (status != HIDP_STATUS_SUCCESS) WARN("HidP_InitializeReportForID returned %#lx\n", status);
++
++    status = HidP_SetUsageValue(HidP_Output, HID_USAGE_PAGE_PID, collection, PID_USAGE_DC_ENABLE_ACTUATORS,
++                                0x0f, preparsed, report_buf, report_len);
++    if (status != HIDP_STATUS_SUCCESS) WARN("HidP_SetUsageValue DC_ENABLE_ACTUATORS returned %#lx\n", status);
++    status = HidP_SetUsageValueArray(HidP_Output, HID_USAGE_PAGE_PID, collection, PID_USAGE_MAGNITUDE,
++                                     magnitudes, sizeof(magnitudes), preparsed, report_buf, report_len);
++    if (status != HIDP_STATUS_SUCCESS) WARN("HidP_SetUsageValueArray MAGNITUDE returned %#lx\n", status);
++    /* the longest duration and SDL's loop count, so that the motors run until
++     * the next call, as XInput's do */
++    status = HidP_SetUsageValue(HidP_Output, HID_USAGE_PAGE_PID, collection, PID_USAGE_DURATION,
++                                0xff, preparsed, report_buf, report_len);
++    if (status != HIDP_STATUS_SUCCESS) WARN("HidP_SetUsageValue DURATION returned %#lx\n", status);
++    status = HidP_SetUsageValue(HidP_Output, HID_USAGE_PAGE_PID, collection, PID_USAGE_LOOP_COUNT,
++                                0xeb, preparsed, report_buf, report_len);
++    if (status != HIDP_STATUS_SUCCESS) WARN("HidP_SetUsageValue LOOP_COUNT returned %#lx\n", status);
++
++    TRACE("magnitudes %u %u %u %u\n", magnitudes[0], magnitudes[1], (BYTE)magnitudes[2], (BYTE)magnitudes[3]);
++    if (!HidD_SetOutputReport(controller->device, report_buf, report_len))
++        WARN("HidD_SetOutputReport failed with error %lu\n", GetLastError());
++    return ERROR_SUCCESS;
++}
++
+ static DWORD HID_set_state(struct xinput_controller *controller, XINPUT_VIBRATION *state)
+ {
+     ULONG report_len = controller->hid.caps.OutputReportByteLength;
+@@ -361,6 +432,8 @@
+     if (!controller->enabled) return ERROR_SUCCESS;
+     if (!update_rumble && !update_buzz) return ERROR_SUCCESS;
+ 
++    if (controller->hid.pid_magnitude_caps.UsagePage) return PID_set_state(controller, state);
++
+     report_id = controller->hid.haptics_report;
+     status = HidP_InitializeReportForID(HidP_Output, report_id, preparsed, report_buf, report_len);
+     if (status != HIDP_STATUS_SUCCESS) WARN("HidP_InitializeReportForID returned %#lx\n", status);
