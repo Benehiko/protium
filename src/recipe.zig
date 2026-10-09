@@ -134,6 +134,11 @@ pub const patches = [_]Patch{
         .why = "on USB, macOS hands an Xbox controller over as raw GIP packets that nothing in Wine could read",
         .text = @embedFile("patch_0004"),
     },
+    .{
+        .name = "0005-winebus-send-rumble-to-an-Xbox-controller-on-USB-as-GIP.patch",
+        .why = "the decoded USB Xbox controller had no haptics, so XInputSetState did nothing; this sends GIP's rumble command",
+        .text = @embedFile("patch_0005"),
+    },
 };
 
 /// The name the finished runtime is installed under, and the name of the
@@ -560,10 +565,10 @@ pub fn withVulkanSoname(gpa: std.mem.Allocator, config_h: []const u8) ![]u8 {
 const testing = std.testing;
 
 test "the runtime is named for the Wine, the CrossOver release and the patch level" {
-    // A build with all four patches is -p4, and installs beside a -p2 rather
+    // A build with all five patches is -p5, and installs beside a -p4 rather
     // than over it. If a patch is added, this name changes, which is the point.
-    try testing.expectEqualStrings("wine-11.0-cx26.3-p4", runtime_name);
-    try testing.expectEqualStrings("build-p4", build_subdir);
+    try testing.expectEqualStrings("wine-11.0-cx26.3-p5", runtime_name);
+    try testing.expectEqualStrings("build-p5", build_subdir);
 }
 
 /// Whether `s` is a SHA-256 written as 64 lower-case hex characters, which is
@@ -610,7 +615,7 @@ test "a release publishes the runtime under its own tag" {
     const url = try runtimeUrl(a, "0.2.0");
     defer a.free(url);
     try testing.expectEqualStrings(
-        "https://github.com/Benehiko/protium/releases/download/v0.2.0/wine-11.0-cx26.3-p4-macos-x86_64.tar.gz",
+        "https://github.com/Benehiko/protium/releases/download/v0.2.0/wine-11.0-cx26.3-p5-macos-x86_64.tar.gz",
         url,
     );
     // The archive unpacks to the runtime's own directory name, which is what

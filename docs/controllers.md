@@ -130,7 +130,80 @@ Measured against a native IOHID listener as for Bluetooth below: reports every
 (p90 1.7 ms), and all 247 stick values identical, Y included. Of the
 buttons, a raw capture showed A, B, LB, RB, LS and RS at the bits above; X,
 Y, Menu, View, the d-pad and the guide report are GIP's documented layout,
-not yet seen from this controller. Rumble is not implemented.
+not yet seen from this controller.
+
+### Rumble over USB
+
+Under `patches/0004` alone the decoded gamepad had no haptics in its
+descriptor and its haptics callbacks returned `STATUS_NOT_SUPPORTED`, so
+`XInputGetCapabilities` reported no force feedback and `XInputSetState` did
+nothing. `patches/0005` (`wine-11.0-cx26.3-p5`) adds the haptics collection
+the SDL backend adds, and turns each request into GIP's rumble command, as
+Linux's `xpad` sends it to an Xbox One controller:
+
+| Byte | Value |
+| --- | --- |
+| 0–3 | `09` (rumble), `00`, sequence, `09` (payload length) |
+| 4–5 | `00`, `0f` (all four motors) |
+| 6–7 | left and right trigger motor, intensity / 512 |
+| 8–9 | left (strong) and right (weak) motor, intensity / 512 |
+| 10–12 | on period `ff`, off period `00`, repeat `ff`: run until the next command |
+
+Stopping sends the same command with every motor at zero. All 13 bytes are
+written as output report `0x01`.
+
+Why report `0x01` with `09` still in the first byte: the passthrough device's
+descriptor (`ioreg`, 2026-10-09, `045e:0b12` on macOS 26) is
+
+```
+05010905a1010600ff150026ff00850109017508950c9102850509057508950491028507
+090775089505810285200920750895128102c0
+```
+
+which declares output report `0x01` with 12 bytes and `0x05` with 4, and the
+device's `MaxOutputReportSize` is 13. The device is Apple's DriverKit driver
+`/System/Library/DriverExtensions/XboxGamepad.dext` (`CoreController` 13.6.2,
+class `XboxSeriesXGamepad`). Its x86-64 code, read with `otool -tV`:
+
+* `XboxWirelessGamepad::setReport` accepts an output report only when the
+  report ID is `0x01` and the buffer 13 bytes, or the ID `0x05` and the buffer
+  5 bytes. Anything else returns `0xe00002c2`; `IOHIDDeviceSetReport` with
+  report `0x09` came back `0xe00002eb`.
+* `XboxHIDDevice::setReport` then hands the buffer, as it is, to the USB OUT
+  pipe (`IOUSBHostPipe::AsyncIO`). It does not prepend the report ID or look
+  at the bytes.
+
+So the report ID only gets the buffer past the driver; the controller sees the
+buffer. Measured with a native program (`IOHIDDeviceSetReport`, outside Wine)
+and the controller in hand:
+
+| Report ID | First byte | Driver | Controller |
+| --- | --- | --- | --- |
+| `0x09` | `09` | `0xe00002eb` | nothing |
+| `0x01` | `01` | success | nothing: GIP command `01` is not rumble |
+| `0x01` | `09` | success | vibrates, and stops on the zero command |
+
+Through Wine, the same day, in a fresh prefix on a development runtime with
+`patches/0005` (only `winebus.so` rebuilt), a console probe built as in
+[Checking a controller](#checking-a-controller) got:
+
+```
+caps ret 0 flags 0x1 vib L=255 R=255
+on  ret 0
+off ret 0
+```
+
+`XINPUT_CAPS_FFB_SUPPORTED` (`0x1`) is set, where before the patch the
+capabilities reported no vibration. Under `WINEDEBUG=+hid` each
+`XInputSetState` reached `gip_device_haptics_start` (`rumble_intensity 65535,
+buzz_intensity 65535`) and `gip_device_haptics_stop`, and no
+`IOHIDDeviceSetReport returned` warning was logged. The controller vibrated at
+full strength for the two seconds between the two calls, and stopped.
+
+A refused write logs `IOHIDDeviceSetReport returned` with the `IOReturn` on
+the hid channel. Not yet tried: a game driving it, and the trigger motors on
+their own (XInput has no call for them). Rumble over Bluetooth is not covered
+by this patch.
 
 ## Latency: where it goes
 

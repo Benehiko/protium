@@ -1,0 +1,113 @@
+winebus.sys: Send rumble to an Xbox controller that macOS passes through as GIP.
+
+The GIP passthrough gamepad built for an Xbox controller on USB (045e:0b12)
+has no haptics in its report descriptor, and its haptics callbacks returned
+STATUS_NOT_SUPPORTED, so XInputGetCapabilities reports no force feedback and
+XInputSetState does nothing.
+
+Add the haptics collection the SDL backend adds, and translate a haptics
+request into GIP's rumble command (0x09) the way Linux's xpad does for an Xbox
+One controller: all four motors, the main motors and the trigger motors at
+intensity / 512, an on period of 0xff with 0xff repeats so that the motors run
+until the next command. Stopping sends the same command with every motor at
+zero.
+
+Apple's XboxGamepad.dext (CoreController 13.6.2) takes an output report only
+as report ID 0x01 of 13 bytes or report ID 0x05 of 5
+(XboxWirelessGamepad::setReport), and writes the buffer to the controller's
+OUT pipe unchanged (XboxHIDDevice::setReport). So the whole 13-byte command,
+its 0x09 included, is sent as report ID 0x01. Asked for report 0x09 the driver
+refuses with 0xe00002eb; sending 0x01 in the command byte reaches the
+controller as a different command and does nothing. Measured on a 045e:0b12
+on macOS 26: the controller vibrates. A refused write is logged on the hid
+channel. See docs/controllers.md.
+
+--- a/dlls/winebus.sys/bus_iohid.c
++++ b/dlls/winebus.sys/bus_iohid.c
+@@ -113,6 +113,7 @@
+     struct unix_device unix_device;
+     IOHIDDeviceRef device;
+     uint8_t *buffer;
++    uint8_t gip_sequence;
+ };
+ 
+ static inline struct iohid_device *impl_from_unix_device(struct unix_device *iface)
+@@ -373,6 +374,42 @@
+ 
+     if (!length || !(impl->buffer = malloc(length))) return STATUS_NO_MEMORY;
+     IOHIDDeviceRegisterInputReportCallback(impl->device, impl->buffer, length, handle_gip_report, iface);
++    return STATUS_SUCCESS;
++}
++
++/* GIP's rumble command, as Linux's xpad sends it to an Xbox One controller:
++ * command 0x09, flags, sequence, payload length 9, then a zero byte, the
++ * motors to drive (0x0f: all four), the left and right trigger motors, the
++ * left (strong) and right (weak) main motors, the on period, the off period
++ * and the repeat count. An on period of 0xff with 0xff repeats keeps the motors
++ * running until the next command, which is how XInput expects them to behave.
++ * Each motor takes intensity / 512, as xpad does.
++ *
++ * Apple's driver (XboxGamepad.dext) accepts an output report only as report
++ * ID 0x01 of 13 bytes or report ID 0x05 of 5, and writes the buffer to the
++ * controller's OUT pipe unchanged. So the command goes out whole, its 0x09
++ * included, under report ID 0x01; asked for report 0x09 the driver refuses
++ * with 0xe00002eb. */
++static NTSTATUS gip_send_rumble(struct unix_device *iface, USHORT strong, USHORT weak,
++                                USHORT left_trigger, USHORT right_trigger)
++{
++    struct iohid_device *impl = impl_from_unix_device(iface);
++    uint8_t packet[13] =
++    {
++        0x09, 0x00, impl->gip_sequence++, 0x09,
++        0x00, 0x0f,
++        left_trigger / 512, right_trigger / 512,
++        strong / 512, weak / 512,
++        0xff, 0x00, 0xff,
++    };
++    IOReturn ret;
++
++    ret = IOHIDDeviceSetReport(impl->device, kIOHIDReportTypeOutput, 0x01, packet, sizeof(packet));
++    if (ret != kIOReturnSuccess)
++    {
++        WARN("iface %p, IOHIDDeviceSetReport returned %#x\n", iface, ret);
++        return STATUS_UNSUCCESSFUL;
++    }
+     return STATUS_SUCCESS;
+ }
+ 
+@@ -380,12 +417,17 @@
+                                          USHORT rumble_intensity, USHORT buzz_intensity,
+                                          USHORT left_intensity, USHORT right_intensity)
+ {
+-    return STATUS_NOT_SUPPORTED;
++    TRACE("iface %p, duration_ms %u, rumble_intensity %u, buzz_intensity %u, left_intensity %u, right_intensity %u.\n",
++          iface, duration_ms, rumble_intensity, buzz_intensity, left_intensity, right_intensity);
++
++    return gip_send_rumble(iface, rumble_intensity, buzz_intensity, left_intensity, right_intensity);
+ }
+ 
+ static NTSTATUS gip_device_haptics_stop(struct unix_device *iface)
+ {
+-    return STATUS_NOT_SUPPORTED;
++    TRACE("iface %p.\n", iface);
++
++    return gip_send_rumble(iface, 0, 0, 0, 0);
+ }
+ 
+ static NTSTATUS gip_device_physical_device_control(struct unix_device *iface, USAGE control)
+@@ -429,6 +471,7 @@
+ 
+     if (!hid_device_begin_report_descriptor(iface, &device_usage)) return FALSE;
+     if (!hid_device_add_gamepad(iface)) return FALSE;
++    if (!hid_device_add_haptics(iface)) return FALSE;
+     if (!hid_device_end_report_descriptor(iface)) return FALSE;
+     return TRUE;
+ }
+@@ -503,6 +546,7 @@
+         if (!(impl = hid_device_create(&gip_device_vtbl, sizeof(struct iohid_device)))) return;
+         impl->device = IOHIDDevice;
+         impl->buffer = NULL;
++        impl->gip_sequence = 0;
+         if (!gip_build_report_descriptor(&impl->unix_device))
+         {
+             impl->unix_device.vtbl->destroy(&impl->unix_device);
