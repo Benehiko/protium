@@ -6,9 +6,23 @@ pre-release such as `v0.2.0-rc1` uses its version's section. `make tag`
 refuses a version that has no section here, so write the notes first, in a
 pull request like any other change.
 
-## Unreleased
+## v0.4.0
 
-Game controllers reach Windows games.
+Game controllers reach Windows games, over Bluetooth and USB.
+
+### Changed
+
+* **The runtime is now `wine-11.0-cx26.3-p4`,** built with the two controller
+  patches below. `protium runtime install` installs it beside the
+  `wine-11.0-cx26.3-p2` you have and does not make it the default. With no
+  default set, every command then stops and asks you to pick a runtime; with
+  `-p2` set as the default, protium keeps using `-p2`, without the controller
+  fixes. Either way, switch with
+  `protium use --runtime wine-11.0-cx26.3-p4`. A prefix moves between `-p2`
+  and `-p4` freely: the new patches change only how controllers are read.
+* **`protium run` now writes two registry values into a prefix that lacks
+  them,** `Enable SDL`=0 and `DisableInput`=1 under the `winebus` service. It
+  says so the one time it does.
 
 ### Fixed
 
@@ -25,9 +39,6 @@ Game controllers reach Windows games.
   to Wine as raw Xbox protocol (GIP) packets, which nothing in Wine read.
   `patches/0004` decodes them; over USB the controller reports every 8 ms,
   against 30 ms over Bluetooth. Rumble is not implemented.
-
-The runtime these build is `wine-11.0-cx26.3-p4`. A prefix moves between
-`-p2` and `-p4` freely.
 
 ## v0.3.1
 
