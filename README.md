@@ -84,6 +84,25 @@ in every Steam library. Elden Ring's menu reads `OFFLINE`; that is expected,
 and `CONTINUE` loads your save. [Using protium](docs/usage.md) covers Steam,
 games and prefixes in full.
 
+## Elden Ring with mods and co-op
+
+[elden-ring-mods](https://github.com/Benehiko/elden-ring-mods) runs Elden Ring
+on protium with Lua mods and private co-op over LAN or a VPN. Its launcher,
+`ermod-engine`, finds protium on your `PATH` or at `~/.local/bin/protium`,
+picks the prefix that holds Elden Ring, and launches through
+`protium run --prefix <name>`:
+
+```sh
+./ermod-engine --dry-run              # finds your game and protium; launches nothing
+./ermod-engine --backend protium      # play, through protium
+```
+
+It never writes to your game install or your saves, and Easy Anti-Cheat never
+runs. Download it from its
+[latest release](https://github.com/Benehiko/elden-ring-mods/releases/latest)
+(`…-macos-aarch64.tar.gz`) and follow its
+[macOS install guide](https://github.com/Benehiko/elden-ring-mods/blob/main/docs/install.md#macos).
+
 ## Learn more
 
 * [Using protium](docs/usage.md): Steam, running games, prefixes, everyday commands
@@ -91,6 +110,7 @@ games and prefixes in full.
 * [D3DMetal](docs/d3dmetal.md): what Apple ships, and where to get it
 * [Build Wine yourself](docs/wine-build.md#build-wine-yourself): from CodeWeavers' published sources
 * [Why not Proton?](docs/why-not-proton.md)
+* [elden-ring-mods](https://github.com/Benehiko/elden-ring-mods): Elden Ring with Lua mods and co-op, on protium
 * [Contributing](CONTRIBUTING.md)
 
 ## FAQ
