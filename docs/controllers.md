@@ -22,6 +22,10 @@ controller connected, and Elden Ring does not respond to it.*
   teaches Wine's XInput readers the layout the controller uses. Over USB,
   `patches/0004` decodes the raw Xbox protocol macOS hands over. Both are in
   `wine-11.0-cx26.3-p4` and later.
+* **Rumble needs `wine-11.0-cx26.3-p6`.** `patches/0005` drives the motors
+  over USB, `patches/0006` over Bluetooth; see
+  [Rumble over USB](#rumble-over-usb) and
+  [Rumble over Bluetooth](#rumble-over-bluetooth).
 * **USB is faster.** The controller reports every 8 ms on USB and every
   30 ms on Bluetooth; see [Latency](#latency-where-it-goes).
 

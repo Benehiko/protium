@@ -131,12 +131,11 @@ paid, supported option.
 games. [What works](docs/status.md) lists the details.
 
 **Can I use an Xbox controller?** Yes, over Bluetooth or USB, from protium
-v0.4.0. A new install gets the runtime that supports it,
-`wine-11.0-cx26.3-p4`. If you are upgrading from an older runtime, protium
-keeps using that one until you switch:
-`protium use --runtime wine-11.0-cx26.3-p4`. USB responds faster than
-Bluetooth, and rumble does not work yet.
-[Game controllers](docs/controllers.md) has the details.
+v0.4.0, and with rumble from v0.5.0. A new install gets the runtime that
+supports both, `wine-11.0-cx26.3-p6`. If you are upgrading from an older
+runtime, protium keeps using that one until you switch:
+`protium use --runtime wine-11.0-cx26.3-p6`. USB responds faster than
+Bluetooth. [Game controllers](docs/controllers.md) has the details.
 
 ## Licence
 
