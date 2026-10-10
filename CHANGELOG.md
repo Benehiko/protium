@@ -6,6 +6,38 @@ pre-release such as `v0.2.0-rc1` uses its version's section. `make tag`
 refuses a version that has no section here, so write the notes first, in a
 pull request like any other change.
 
+## v0.5.0
+
+An Xbox controller rumbles, over USB and over Bluetooth.
+
+### Changed
+
+* **The runtime is now `wine-11.0-cx26.3-p6`,** built with the two rumble
+  patches below. `protium runtime install` installs it beside the runtime you
+  have and does not make it the default. With no default set, every command
+  then stops and asks you to pick a runtime; with `-p4` or older set as the
+  default, protium keeps using that one, without rumble. Either way, switch
+  with `protium use --runtime wine-11.0-cx26.3-p6`. A prefix moves between
+  `-p2`, `-p4` and `-p6` freely: the new patches change only how controllers
+  are driven.
+
+### Fixed
+
+* **An Xbox controller on USB did not rumble.** The controller Wine decodes
+  from macOS's raw Xbox protocol (GIP) had no rumble, so a game was told there
+  was none. `patches/0005` sends the controller GIP's rumble command. Apple's
+  driver accepts it only as output report `0x01`, and passes the bytes to the
+  controller unchanged.
+* **An Xbox controller over Bluetooth did not rumble.** Over Bluetooth the
+  controller takes rumble through its own report, `0x03`, which Wine's XInput
+  did not look for. `patches/0006` finds that report and sends each rumble
+  request through it.
+
+Both were felt on an Xbox Wireless Controller (`045e:0b12` on USB,
+`045e:0b13` over Bluetooth) through XInput's `XInputSetState`. A game driving
+the rumble, and DirectInput force feedback over Bluetooth, have not been
+tried yet. See `docs/controllers.md`.
+
 ## v0.4.0
 
 Game controllers reach Windows games, over Bluetooth and USB.
